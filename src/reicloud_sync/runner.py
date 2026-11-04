@@ -42,7 +42,37 @@ class Runner:
         self.due = {}
         self.attempted = set()
         self.controls = {}
+        self.failures = {}
+        self.blocked = {}
+        self.had_failures = False
+        self.errors = {}
         self.logger = get_cli_logger()
+
+    @staticmethod
+    def signature(state):
+        return tuple(state.get(key) for key in ('phase', 'last_success', 'finished', 'error'))
+
+    def completed(self, key, job, code, pair):
+        self.logger.info('Scheduled sync %s exited with code %s.', job.pair.name, code)
+        if code == 0:
+            self.failures.pop(key, None)
+            self.blocked.pop(key, None)
+            self.due[key] = self.clock() + pair.interval
+            return
+        self.had_failures = True
+        state = status(self.paths, pair.name)
+        if state['active']:
+            # A manual run may have won the per-pair lock just before our worker.
+            self.due[key] = self.clock() + 5
+        elif state['phase'] == 'retryable_error' and state.get('automatic_retry'):
+            count = self.failures.get(key, 0) + 1
+            self.failures[key] = count
+            delay = min(30 * 2 ** min(count - 1, 7), 3600)
+            self.due[key] = self.clock() + delay
+            self.logger.warning('%s: transient failure; retry in %s seconds.', pair.name, delay)
+        else:
+            self.blocked[key] = self.signature(state)
+            self.logger.error('%s needs manual attention; other pairs will continue.', pair.name)
 
     def tick(self, *, once=False):
         pairs = load_pairs(self.paths)
@@ -50,32 +80,56 @@ class Runner:
         for key, job in list(self.active.items()):
             code = job.process.poll()
             if code is not None:
-                self.logger.info('Scheduled sync %s exited with code %s.', job.pair.name, code)
-                self.due[key] = self.clock() + known.get(key, job.pair).interval
                 del self.active[key]
+                if key in known:
+                    try:
+                        self.completed(key, job, code, known[key])
+                    except (ConfigError, OSError, ValueError) as error:
+                        self.logger.error('%s: %s', job.pair.name, error)
+                        self.errors[key] = str(error)
         self.due = {key: value for key, value in self.due.items() if key in known}
         pending = False
-        for key, pair in known.items():
-            control = read_control(state_dir(self.paths, pair))
-            previous = self.controls.get(key)
-            self.controls[key] = control
-            if previous is not None and previous != control and not control['paused']:
-                self.due.pop(key, None)
-            if control['paused']:
-                continue
-            if key in self.active or (once and key in self.attempted):
-                continue
-            state = status(self.paths, pair.name)
-            if state['active'] or state['phase'] != 'ready':
-                continue
-            if not once and self.due.get(key, 0) > self.clock():
-                continue
-            pending = True
-            if len(self.active) >= self.jobs:
-                continue
-            self.logger.info('Starting scheduled sync: %s', pair.name)
-            self.active[key] = Job(pair, self.worker(self.paths, pair))
-            self.attempted.add(key)
+        for key, pair in sorted(known.items(), key=lambda entry: self.due.get(entry[0], 0)):
+            try:
+                control = read_control(state_dir(self.paths, pair))
+                previous = self.controls.get(key)
+                self.controls[key] = control
+                if previous is not None and previous != control and not control['paused']:
+                    self.due.pop(key, None)
+                if control['paused'] or key in self.active or (once and key in self.attempted):
+                    continue
+                state = status(self.paths, pair.name)
+                signature = self.signature(state)
+                if key in self.blocked:
+                    if self.blocked[key] == signature:
+                        continue
+                    self.blocked.pop(key)
+                    self.failures.pop(key, None)
+                    self.due.pop(key, None)
+                if state['active']:
+                    continue
+                if state['phase'] not in ('ready', 'retryable_error'):
+                    continue
+                if state['phase'] == 'retryable_error' and not state.get('automatic_retry'):
+                    continue
+                if not once and self.due.get(key, 0) > self.clock():
+                    continue
+                pending = True
+                if len(self.active) >= self.jobs:
+                    continue
+                self.logger.info('Starting scheduled sync: %s', pair.name)
+                self.attempted.add(key)
+                try:
+                    self.active[key] = Job(pair, self.worker(self.paths, pair))
+                except OSError:
+                    self.blocked[key] = signature
+                    raise
+                self.errors.pop(key, None)
+            except (ConfigError, OSError, ValueError) as error:
+                self.had_failures = True
+                if self.errors.get(key) != str(error):
+                    self.logger.error('%s: %s', pair.name, error)
+                    self.errors[key] = str(error)
         return bool(self.active) or pending
 
     def stop(self):
@@ -129,3 +183,4 @@ def run_forever(paths, jobs=2, *, once=False):
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
             runner.logger.info('Runner stopped.')
+    return 1 if once and runner.had_failures else 0

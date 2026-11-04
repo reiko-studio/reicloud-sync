@@ -153,7 +153,12 @@ manual runs. Only one runner may use a given configuration at a time.
 
 `run --once` processes eligible pairs once and exits. Ctrl+C or SIGTERM stops new
 work and asks active transfers to finish gracefully. No pair is automatically
-initialized or recovered. In this version failed pairs need manual attention.
+initialized or recovered. Transient failures retry after 30 seconds, doubling to
+at most one hour; success restores the normal pair interval. Critical failures,
+deletion guards, missing roots, invalid configuration and unknown errors wait for
+manual attention. A manual successful sync makes a blocked pair eligible again.
+Retry scheduling never adds `--force` or resync. `run --once` makes one attempt per
+eligible pair and returns a nonzero exit status if an attempted sync fails.
 
 ## Pause and resume
 

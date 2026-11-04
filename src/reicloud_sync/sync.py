@@ -105,6 +105,48 @@ def verify_roots(paths, pair, run):
         raise ConfigError(f'Remote root is not a directory: {pair.remote}')
 
 
+def failure_policy(error, *, preflight=False):
+    if isinstance(error, KeyboardInterrupt):
+        return 'interrupted', False
+    if not isinstance(error, subprocess.CalledProcessError):
+        return 'configuration', False
+    code = error.returncode
+    text = (error.stderr or '').lower()
+    if code == 7 and not preflight:
+        return 'critical', False
+    safety = ('too many deletes', 'safety abort', 'check-access', 'access health',
+              'all files have changed', 'lock file', 'check-sync', 'integrity')
+    if any(word in text for word in safety):
+        return 'safety', False
+    if code == 2:
+        return 'configuration', False
+    transient = ('timeout', 'timed out', 'connection', 'network', 'temporary',
+                 'temporarily', 'rate limit', 'too many requests', '429',
+                 '502 bad gateway', '503 service', '504 gateway')
+    if (preflight and code == 5) or (code == 1 and any(word in text for word in transient)):
+        return 'transient', True
+    return 'unknown', False
+
+
+def record_failure(directory, state, error, operation, *, preflight=False):
+    code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+    retryable = operation == 'sync' and (preflight or code in (1, 2))
+    kind, automatic = failure_policy(error, preflight=preflight)
+    if isinstance(error, ConfigError):
+        message = str(error)
+    elif retryable:
+        message = ('Sync did not finish. Inspect diagnostics and retry sync; '
+                   'for intended deletions above the limit, preview with --max-delete PERCENT.')
+    else:
+        message = f'Operation failed ({type(error).__name__}); inspect diagnostics before recovery.'
+    state.update(phase='retryable_error' if retryable else 'needs_recovery',
+                 operation=operation, finished=now(), exit_code=code, error=message,
+                 failure_kind=kind, automatic_retry=automatic and retryable)
+    # Store classification and a safe message, never raw provider diagnostics.
+    get_cli_logger().error('%s', message)
+    write_state(directory, state)
+
+
 def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_delete=50):
     logger = get_cli_logger()
     # Hold the config lock while using a pair so remove/add cannot race a transfer.
@@ -127,7 +169,12 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                 raise ConfigError('Pair has no sync state. Use init first.')
             if operation == 'recover' and state['phase'] == 'ready':
                 raise ConfigError('Pair is ready; use sync. Recovery is reserved for interrupted or failed operations.')
-            verify_roots(paths, pair, run)
+            try:
+                verify_roots(paths, pair, run)
+            except (ConfigError, OSError, ValueError, subprocess.CalledProcessError) as error:
+                if operation == 'sync' and not dry_run:
+                    record_failure(directory, state, error, operation, preflight=True)
+                raise
             workdir = directory / 'bisync'
             if operation == 'sync':
                 if not workdir.is_dir() or not list(workdir.glob('*.path1.lst')) or not list(workdir.glob('*.path2.lst')):
@@ -178,18 +225,10 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                 run(paths, 'bisync', pair.local, pair.remote, *arguments,
                     '--workdir', str(workdir), lock_fd=lock_fd)
             except BaseException as error:
-                code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
-                retryable = operation == 'sync' and code in (1, 2)
-                message = ('Sync failed without requiring resync. Inspect diagnostics and retry sync; '
-                           'for intended deletions above the limit, preview with --max-delete PERCENT.'
-                           if retryable else
-                           f'Operation failed ({type(error).__name__}); inspect rclone diagnostics before recovery.')
-                state.update(phase='retryable_error' if retryable else 'needs_recovery',
-                             finished=now(), exit_code=code, error=message)
-                logger.error('%s', message)
-                write_state(directory, state)
+                record_failure(directory, state, error, operation)
                 raise
-            state.update(phase='ready', finished=now(), last_success=now(), error=None, exit_code=0)
+            state.update(phase='ready', finished=now(), last_success=now(), error=None, exit_code=0,
+                         failure_kind=None, automatic_retry=False)
             write_state(directory, state)
             logger.info('%s complete for %s. Last successful run: %s', operation, name, state['last_success'])
 

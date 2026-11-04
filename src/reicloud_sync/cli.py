@@ -9,11 +9,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 from . import __version__
 from .config import ConfigError, Paths
 from .sync import transfer, status, set_paused
 from .runner import run_forever
+from .processes import run_locked
 from .logging import get_cli_logger
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -26,26 +28,15 @@ def rclone(paths, *args, capture=False, lock_fd=None):
     environment = {key: value for key, value in os.environ.items() if not key.startswith("RCLONE_")}
     command = [executable, "--config", str(paths.credentials), *args]
     if lock_fd is None:
-        return subprocess.run(command, env=environment, check=True, text=True,
-                              stdout=subprocess.PIPE if capture else None, pass_fds=())
-    with subprocess.Popen(command, env=environment, text=True,
-                          stdout=subprocess.PIPE if capture else None, pass_fds=(lock_fd,)) as process:
         try:
-            output, _ = process.communicate()
-        except KeyboardInterrupt:
-            # The terminal or runner signals the whole group. Give bisync time to
-            # finish its own graceful shutdown instead of killing it after 250ms.
-            try:
-                output, _ = process.communicate(timeout=95)
-            except (subprocess.TimeoutExpired, KeyboardInterrupt):
-                process.kill()
-                process.wait()
-                raise KeyboardInterrupt() from None
-            if process.returncode != 0 or args[0] != 'bisync':
-                raise
-        if process.returncode:
-            raise subprocess.CalledProcessError(process.returncode, command, output)
-        return subprocess.CompletedProcess(command, process.returncode, output)
+            return subprocess.run(command, env=environment, check=True, text=True,
+                                  stdout=subprocess.PIPE if capture else None,
+                                  stderr=subprocess.PIPE, pass_fds=())
+        except subprocess.CalledProcessError as error:
+            if error.stderr:
+                sys.stderr.write(error.stderr)
+            raise
+    return run_locked(command, environment, capture, lock_fd, bisync=args[0] == 'bisync')
 
 
 
@@ -161,8 +152,7 @@ def main(argv=None):
             set_paused(paths, args.name, args.command == 'pause')
             return 0
         if args.command == "run":
-            run_forever(paths, args.jobs, once=args.once)
-            return 0
+            return run_forever(paths, args.jobs, once=args.once)
         if args.command == "interval":
             with edit_pairs(paths) as pairs:
                 index = next((i for i, pair in enumerate(pairs) if pair.name == args.name), None)

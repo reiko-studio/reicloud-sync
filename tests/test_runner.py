@@ -7,7 +7,7 @@ import test_setup
 from reicloud_sync.config import Paths, ConfigError
 from reicloud_sync.pairs import find_pair, edit_pairs
 from reicloud_sync.runner import Runner, runner_lock
-from reicloud_sync.sync import state_dir, write_state, set_paused, read_control, pair_lock
+from reicloud_sync.sync import state_dir, write_state, set_paused, read_control, pair_lock, failure_policy
 
 
 class Process:
@@ -127,3 +127,73 @@ class RunnerTests(unittest.TestCase):
     def test_unknown_pause_does_not_create_state(self):
         self.assertEqual(self.invoke('pause', 'missing')[0], 1)
         self.assertFalse((self.paths.state / 'pairs').exists())
+
+    def test_transient_backoff_grows_and_success_resets_it(self):
+        pair = self.pair('network', interval=5)
+        directory = state_dir(self.paths, pair)
+        self.runner.tick()
+        write_state(directory, {'phase': 'retryable_error', 'last_success': None,
+                                'automatic_retry': True, 'error': 'network', 'finished': 'one'})
+        self.started[-1][1].code = 1
+        self.runner.tick()
+        self.time = 29
+        self.runner.tick()
+        self.assertEqual(len(self.started), 1)
+        self.time = 30
+        self.runner.tick()
+        self.assertEqual(len(self.started), 2)
+        self.started[-1][1].code = 1
+        self.runner.tick()
+        self.time = 89
+        self.runner.tick()
+        self.assertEqual(len(self.started), 2)
+        self.time = 90
+        self.runner.tick()
+        self.assertEqual(len(self.started), 3)
+        write_state(directory, {'phase': 'ready', 'last_success': 'success'})
+        self.started[-1][1].code = 0
+        self.runner.tick()
+        self.time = 95
+        self.runner.tick()
+        self.assertEqual(len(self.started), 4)
+        self.assertEqual(self.runner.failures, {})
+
+    def test_safety_failure_blocks_only_that_pair(self):
+        broken = self.pair('safety')
+        self.pair('healthy', interval=1)
+        self.runner.tick()
+        write_state(state_dir(self.paths, broken), {'phase': 'retryable_error',
+                    'last_success': None, 'automatic_retry': False, 'error': 'too many deletes'})
+        self.started[0][1].code = 1
+        self.started[1][1].code = 0
+        self.runner.tick()
+        self.time = 100
+        self.runner.tick()
+        self.assertEqual([name for name, _ in self.started], ['safety', 'healthy', 'healthy'])
+
+    def test_per_pair_corrupt_state_does_not_block_healthy_pair(self):
+        broken = self.pair('broken')
+        self.pair('healthy')
+        (state_dir(self.paths, broken) / 'status.json').write_text('bad json')
+        self.runner.tick()
+        self.assertEqual([name for name, _ in self.started], ['healthy'])
+
+    def test_failure_classification_never_auto_retries_critical_or_safety(self):
+        import subprocess
+        for code, message, expected in [(1, 'connection timed out', True),
+                                         (1, 'Safety abort: too many deletes', False),
+                                         (2, 'usage error', False),
+                                         (7, 'connection timed out', False),
+                                         (1, 'unclassified failure', False)]:
+            with self.subTest(code=code, message=message):
+                error = subprocess.CalledProcessError(code, ['rclone'], stderr=message)
+                self.assertEqual(failure_policy(error)[1], expected)
+
+    def test_worker_launch_failure_is_not_retried_in_a_busy_loop(self):
+        self.pair('launch')
+        def fail(*args):
+            raise OSError('cannot start worker')
+        self.runner.worker = fail
+        self.runner.tick(once=True)
+        self.assertFalse(self.runner.tick(once=True))
+        self.assertTrue(self.runner.had_failures)
