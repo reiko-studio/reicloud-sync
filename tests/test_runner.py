@@ -7,7 +7,7 @@ import test_setup
 from reicloud_sync.config import Paths, ConfigError
 from reicloud_sync.pairs import find_pair, edit_pairs
 from reicloud_sync.runner import Runner, runner_lock
-from reicloud_sync.sync import state_dir, write_state
+from reicloud_sync.sync import state_dir, write_state, set_paused, read_control, pair_lock
 
 
 class Process:
@@ -95,3 +95,35 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 with runner_lock(self.paths):
                     pass
+
+    def test_pause_and_resume_are_persistent_and_resume_is_immediate(self):
+        pair = self.pair('notes', 60)
+        self.runner.tick()
+        self.started[0][1].code = 0
+        self.runner.tick()
+        self.assertEqual(self.invoke('pause', 'notes')[0], 0)
+        self.time = 1
+        self.runner.tick()
+        self.assertEqual(len(self.started), 1)
+        self.assertTrue(read_control(state_dir(self.paths, pair))['paused'])
+        self.assertEqual(self.invoke('resume', 'notes')[0], 0)
+        self.runner.tick()
+        self.assertEqual(len(self.started), 2)
+
+    def test_pause_does_not_wait_for_transfer_lock(self):
+        pair = self.pair('notes')
+        with pair_lock(state_dir(self.paths, pair)):
+            self.assertEqual(self.invoke('pause', pair.name)[0], 0)
+        self.runner.tick()
+        self.assertEqual(self.started, [])
+
+    def test_paused_pair_is_rejected_before_manual_transfer(self):
+        pair = self.pair('notes')
+        set_paused(self.paths, pair.name, True)
+        code, output = self.invoke('sync', pair.name)
+        self.assertEqual(code, 1)
+        self.assertIn('is paused', output)
+
+    def test_unknown_pause_does_not_create_state(self):
+        self.assertEqual(self.invoke('pause', 'missing')[0], 1)
+        self.assertFalse((self.paths.state / 'pairs').exists())

@@ -12,7 +12,7 @@ import subprocess
 
 from . import __version__
 from .config import ConfigError, Paths
-from .sync import transfer, status
+from .sync import transfer, status, set_paused
 from .runner import run_forever
 from .logging import get_cli_logger
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
@@ -144,6 +144,9 @@ def main(argv=None):
     interval = commands.add_parser("interval", help="Change a pair's sync interval")
     interval.add_argument("name")
     interval.add_argument("duration", type=duration)
+    for action in ('pause', 'resume'):
+        control = commands.add_parser(action, help=f'{action.capitalize()} future syncs for a pair')
+        control.add_argument('name')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -153,6 +156,9 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command in ('pause', 'resume'):
+            set_paused(paths, args.name, args.command == 'pause')
             return 0
         if args.command == "run":
             run_forever(paths, args.jobs, once=args.once)

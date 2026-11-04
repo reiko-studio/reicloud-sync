@@ -41,7 +41,8 @@ def read_state(directory):
     return data
 
 
-def write_state(directory, data):
+def write_state(directory, data, *, filename="status.json"):
+    target_name = filename
     filename = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as stream:
@@ -50,7 +51,7 @@ def write_state(directory, data):
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(filename, directory / 'status.json')
+        os.replace(filename, directory / target_name)
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(descriptor)
@@ -114,6 +115,8 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
         directory = state_dir(paths, pair)
         with pair_lock(directory) as lock_fd:
             state = read_state(directory)
+            if operation == 'sync' and read_control(directory)['paused'] and not dry_run:
+                raise ConfigError(f'Pair {name} is paused. Run reicloud resume {name} first.')
             if operation == 'init' and state['phase'] != 'uninitialized':
                 raise ConfigError('Pair already has sync state. Use sync, or explicitly recover after inspecting the previous failure.')
             retry_old_failure = (retry and state['phase'] == 'needs_recovery'
@@ -189,3 +192,26 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
             state.update(phase='ready', finished=now(), last_success=now(), error=None, exit_code=0)
             write_state(directory, state)
             logger.info('%s complete for %s. Last successful run: %s', operation, name, state['last_success'])
+
+
+def read_control(directory):
+    try:
+        data = json.loads((directory / 'control.json').read_text())
+    except FileNotFoundError:
+        return {'paused': False, 'updated': None}
+    except (ValueError, OSError) as error:
+        raise ConfigError(f'Cannot read pause state: {error}') from None
+    if not isinstance(data, dict) or type(data.get('paused')) is not bool:
+        raise ConfigError('Invalid control.json; paused must be a boolean.')
+    return data
+
+
+def set_paused(paths, name, paused):
+    pair = find_pair(paths, name)
+    directory = state_dir(paths, pair)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (directory / 'control.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        write_state(directory, {'paused': paused, 'updated': now()}, filename='control.json')
+    get_cli_logger().info('%s %s. Active transfers are allowed to finish.',
+                          'Paused' if paused else 'Resumed', name)

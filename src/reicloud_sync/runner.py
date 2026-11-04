@@ -14,7 +14,7 @@ import time
 from .config import ConfigError
 from .logging import get_cli_logger
 from .pairs import load_pairs
-from .sync import state_dir, status
+from .sync import state_dir, status, read_control
 
 
 def start_worker(paths, pair):
@@ -41,6 +41,7 @@ class Runner:
         self.active = {}
         self.due = {}
         self.attempted = set()
+        self.controls = {}
         self.logger = get_cli_logger()
 
     def tick(self, *, once=False):
@@ -55,6 +56,13 @@ class Runner:
         self.due = {key: value for key, value in self.due.items() if key in known}
         pending = False
         for key, pair in known.items():
+            control = read_control(state_dir(self.paths, pair))
+            previous = self.controls.get(key)
+            self.controls[key] = control
+            if previous is not None and previous != control and not control['paused']:
+                self.due.pop(key, None)
+            if control['paused']:
+                continue
             if key in self.active or (once and key in self.attempted):
                 continue
             state = status(self.paths, pair.name)

@@ -155,6 +155,19 @@ manual runs. Only one runner may use a given configuration at a time.
 work and asks active transfers to finish gracefully. No pair is automatically
 initialized or recovered. In this version failed pairs need manual attention.
 
+## Pause and resume
+
+```sh
+reicloud pause notes
+reicloud resume notes
+```
+
+Pause persists across runner restarts and blocks future scheduled and manual
+syncs. Active transfers finish normally; pause does not wait for them. Explicit
+initialization, recovery and dry-run previews remain available. The runner notices
+resume on its next tick and makes the pair eligible immediately. Pause state is
+stored separately from transfer history, so a finishing transfer cannot erase it.
+
 ## Configuration
 
 ```sh
