@@ -16,7 +16,7 @@ from .config import ConfigError
 from .pairs import find_pair, make_pair
 from .logging import get_cli_logger
 from .scheduling import read_schedule, runner_active
-from .exclusions import pending, fingerprint, filter_arguments
+from .exclusions import pending, fingerprint, filter_arguments, selection, managed_patterns
 from .activity import activity_scope
 
 MARKER = '.reicloud-sync-access'
@@ -99,6 +99,7 @@ def status(paths, name):
                and not schedule.get('blocked_signature')) else None
     return dict(state, name=pair.name, active=active, state_dir=str(directory),
                 paused=control['paused'], interval_seconds=pair.interval,
+                kind=pair.kind, managed_exclusions=list(managed_patterns(pair)),
                 exclusions=list(pair.exclusions), filters_pending=pending(pair, state),
                 runner_active=running, next_run=next_run,
                 scheduled_for=schedule.get('next_run'),
@@ -256,8 +257,8 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                 raise
             state.update(phase='ready', finished=now(), last_success=now(), error=None, exit_code=0,
                          failure_kind=None, automatic_retry=False)
-            if operation != 'sync' or pair.exclusions or 'filters_hash' in state:
-                state['filters_hash'] = fingerprint(pair.exclusions)
+            if operation != 'sync' or selection(pair) or 'filters_hash' in state:
+                state['filters_hash'] = fingerprint(selection(pair))
             write_state(directory, state)
             logger.info('%s complete for %s. Last successful run: %s', operation, name, state['last_success'])
 

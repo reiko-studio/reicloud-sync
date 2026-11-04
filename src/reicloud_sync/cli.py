@@ -22,6 +22,7 @@ from .notifications import enabled as notifications_enabled, configure as config
 from .activity import read_entries, follow, current_recorder, sanitize
 from .sync import state_dir
 from .exclusions import change as change_exclusion
+from .workspace import migrate, rollback as rollback_migration, computer_name, external_remote
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
 
@@ -98,6 +99,8 @@ def main(argv=None):
     parser.add_argument("--config-dir", help="Override REICLOUD_CONFIG_DIR and the XDG config directory")
     commands = parser.add_subparsers(dest="command", required=True)
     setup = commands.add_parser("setup", help="Create directories and initial configuration")
+    setup.add_argument("--workspace", help="Canonical local Dropbox folder (default for new setup: ~/Dropbox)")
+    setup.add_argument("--computer", help="Computer label; a machine-ID suffix is appended")
     setup.add_argument("--login", action="store_true", help="Also start Dropbox login")
     config = commands.add_parser("config", help="Inspect configuration without displaying credentials")
     config.add_argument("action", choices=["paths", "check"])
@@ -110,7 +113,7 @@ def main(argv=None):
     add = commands.add_parser("add", help="Register a folder pair without transferring files")
     add.add_argument("name")
     add.add_argument("local")
-    add.add_argument("remote")
+    add.add_argument("remote", nargs="?", help="Legacy destination; workspace mappings derive their destination")
     add.add_argument("--interval", type=duration, default=300, help="Sync interval (default: 5m)")
     listing = commands.add_parser("list", help="List saved folder pairs")
     listing.add_argument("--json", action="store_true")
@@ -173,6 +176,12 @@ def main(argv=None):
     logs.add_argument('--json', action='store_true', help='Output JSON lines')
     notifications = commands.add_parser('notifications', help='Configure optional desktop alerts')
     notifications.add_argument('action', choices=['on', 'off', 'status', 'test'])
+    migration = commands.add_parser('migrate', help='Preview or apply explicit legacy workspace migration')
+    migration.add_argument('--workspace')
+    migration.add_argument('--computer')
+    migration.add_argument('--retire-legacy-pairs', action='store_true')
+    migration.add_argument('--dry-run', action='store_true')
+    migration.add_argument('--rollback', action='store_true')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -182,6 +191,15 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'migrate':
+            if args.rollback:
+                rollback_migration(paths)
+                logger.info('Interrupted migration rolled back.')
+            else:
+                result = migrate(paths, args.workspace or '~/Dropbox', args.computer,
+                                 retire_legacy=args.retire_legacy_pairs, dry_run=args.dry_run)
+                print(json.dumps(result, indent=2))
             return 0
         if args.command == 'notifications':
             paths.load()
@@ -214,9 +232,9 @@ def main(argv=None):
                 if args.dry_run or args.prefer:
                     raise ConfigError('--dry-run and --prefer require --apply.')
                 data = status(paths, args.name)
-                result = {'exclusions': data['exclusions'], 'pending': data['filters_pending']}
+                result = {'managed': data['managed_exclusions'], 'exclusions': data['exclusions'], 'pending': data['filters_pending']}
                 print(json.dumps(result, indent=2) if args.json else
-                      '\n'.join(result['exclusions']) + f"\nPending application: {result['pending']}")
+                      '\n'.join(['Managed: ' + rule for rule in result['managed']] + result['exclusions']) + f"\nPending application: {result['pending']}")
             return 0
         if args.command == 'service':
             if args.service_action == 'install':
@@ -238,7 +256,18 @@ def main(argv=None):
             logger.info("Interval for %s: %s seconds", args.name, args.duration)
             return 0
         if args.command == "add":
-            pair = make_pair(args.name, args.local, args.remote, interval=args.interval, require_directory=True)
+            config = paths.load()
+            if config['version'] == 2:
+                if args.name == 'workspace':
+                    raise ConfigError('workspace is reserved for the canonical Dropbox folder.')
+                remote = external_remote(config, args.name)
+                if args.remote is not None and args.remote != remote:
+                    raise ConfigError(f'External mappings must target {remote}; shared content belongs inside the workspace.')
+                pair = make_pair(args.name, args.local, remote, interval=args.interval, kind='external')
+            else:
+                if args.remote is None:
+                    raise ConfigError('Legacy setup requires a remote; migrate to use automatic destinations.')
+                pair = make_pair(args.name, args.local, args.remote, interval=args.interval, require_directory=True)
             for directory in (paths.config, paths.state, paths.cache):
                 if directory.resolve().is_relative_to(pair.local) or Path(pair.local).is_relative_to(directory.resolve()):
                     raise ConfigError("Local root must not overlap reicloud configuration, state or cache.")
@@ -299,7 +328,16 @@ def main(argv=None):
                           f"\nLast error: {data.get('last_error') or 'none'}")
             return 0
         if args.command == "setup":
+            fresh = not paths.settings.exists()
             paths.initialize()
+            config = paths.load()
+            if fresh or (config['version'] == 1 and args.workspace):
+                migrate(paths, args.workspace or '~/Dropbox', args.computer)
+            elif config['version'] == 2 and (args.workspace or args.computer):
+                workspace = find_pair(paths, 'workspace')
+                if ((args.workspace and str(Path(args.workspace).expanduser().resolve()) != workspace.local)
+                        or (args.computer and computer_name(args.computer) != config['computer']['name'])):
+                    raise ConfigError('Setup identity/root is already saved; it cannot be changed implicitly.')
             logger.info("Configuration ready: %s", paths.settings)
             if not args.login:
                 logger.info("Next: reicloud login dropbox")

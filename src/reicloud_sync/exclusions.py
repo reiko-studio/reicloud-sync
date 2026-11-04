@@ -27,17 +27,25 @@ def fingerprint(patterns):
     return hashlib.sha256(filter_text(patterns).encode()).hexdigest()
 
 
+def managed_patterns(pair):
+    return ('/.reicloud-computers/**',) if pair.kind == 'workspace' else ()
+
+
+def selection(pair):
+    return managed_patterns(pair) + pair.exclusions
+
+
 def pending(pair, state):
     return (state['phase'] != 'uninitialized'
-            and state.get('filters_hash', fingerprint(())) != fingerprint(pair.exclusions))
+            and state.get('filters_hash', fingerprint(())) != fingerprint(selection(pair)))
 
 
 def filter_arguments(workdir, pair, state, operation):
     # Old unfiltered histories can keep syncing until the user changes selection.
-    if not pair.exclusions and 'filters_hash' not in state and operation == 'sync':
+    if not selection(pair) and 'filters_hash' not in state and operation == 'sync':
         return []
     file = workdir / 'filters.txt'
-    file.write_text(filter_text(pair.exclusions), encoding='utf-8')
+    file.write_text(filter_text(selection(pair)), encoding='utf-8')
     return ['--filters-file', str(file)]
 
 

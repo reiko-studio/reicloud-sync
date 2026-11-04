@@ -362,3 +362,28 @@ Tests use temporary directories and mocked authentication. Transfer tests run
 real rclone between disposable local directories, covering copies, edits,
 deletions, conflicts, deletion guards, missing access markers and recovery.
 Real Dropbox OAuth requires completing the browser login yourself.
+
+## Workspace profiles (version 2)
+
+New setup establishes a canonical workspace (default `~/Dropbox`) and saves a
+computer name as `<label>-<first six machine-id characters>`, matching suisave's
+convention. `setup --workspace PATH --computer LABEL` customizes the suggestions.
+Local sync directories are created during initialization, not configuration.
+
+The workspace targets `dropbox:` and always excludes `/.reicloud-computers/**`.
+An external mapping added as `add NAME LOCAL` targets
+`dropbox:.reicloud-computers/COMPUTER/NAME`. Shared content belongs inside the
+canonical workspace. Separate local pairs cannot nest inside it. Explicit remote
+arguments are accepted only when they match the derived external destination.
+
+Existing version-1 setups remain usable and are never silently retargeted:
+
+```sh
+reicloud migrate --workspace ~/Dropbox --dry-run
+```
+
+If old root-level pairs cannot be retained under this policy, the preview lists
+them. `--retire-legacy-pairs` explicitly unregisters them when migration is applied;
+it does not move or delete local/remote files or their histories. Configuration is
+backed up before migration. A partially published migration blocks readers and
+can be restored with `migrate --rollback`. Stop an existing runner before migrating.

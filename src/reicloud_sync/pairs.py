@@ -21,9 +21,12 @@ class Pair:
     remote: str
     interval: int = 300
     exclusions: tuple[str, ...] = ()
+    kind: str = "legacy"
 
 
-def make_pair(name, local, remote, interval=300, exclusions=(), *, require_directory=False):
+def make_pair(name, local, remote, interval=300, exclusions=(), kind="legacy", *, require_directory=False):
+    if kind not in ("legacy", "workspace", "external"):
+        raise ConfigError("Pair kind must be legacy, workspace or external.")
     from .exclusions import validate_patterns
     exclusions = validate_patterns(exclusions)
     if type(interval) is not int or not 1 <= interval <= 604800:
@@ -43,7 +46,7 @@ def make_pair(name, local, remote, interval=300, exclusions=(), *, require_direc
     parts = [part for part in raw.split('/') if part and part != '.']
     if '..' in parts:
         raise ConfigError('Remote path must not contain .. components.')
-    return Pair(name, str(path), 'dropbox:' + '/'.join(parts), interval, exclusions)
+    return Pair(name, str(path), 'dropbox:' + '/'.join(parts), interval, exclusions, kind)
 
 
 def remote_parts(remote):
@@ -54,24 +57,35 @@ def overlaps(left, right):
     return left[:len(right)] == right or right[:len(left)] == left
 
 
-def validate_pairs(pairs):
+def validate_pairs(pairs, config=None):
+    if config and config['version'] == 2:
+        from .workspace import external_remote
+        workspaces = [pair for pair in pairs if pair.kind == 'workspace']
+        if len(workspaces) != 1 or workspaces[0].name != 'workspace' or workspaces[0].remote != 'dropbox:':
+            raise ConfigError('Exactly one workspace pair named workspace must target dropbox:.')
+        for pair in pairs:
+            if pair.kind != 'workspace' and (pair.kind != 'external' or pair.remote != external_remote(config, pair.name)):
+                raise ConfigError('External mappings must target this computer namespace; arbitrary Dropbox root mappings are not allowed.')
     for index, pair in enumerate(pairs):
         for other in pairs[:index]:
             if pair.name == other.name:
                 raise ConfigError(f'Duplicate pair name: {pair.name}')
             if overlaps(Path(pair.local).parts, Path(other.local).parts):
                 raise ConfigError(f'Local roots overlap: {pair.name} and {other.name}')
-            if overlaps(remote_parts(pair.remote), remote_parts(other.remote)):
+            managed_overlap = (config and config['version'] == 2 and {pair.kind, other.kind} == {'workspace', 'external'})
+            if not managed_overlap and overlaps(remote_parts(pair.remote), remote_parts(other.remote)):
                 raise ConfigError(f'Dropbox roots overlap: {pair.name} and {other.name}')
 
 
 def load_pairs(paths):
-    paths.load()
+    config = paths.load()
     file = paths.config / 'pairs.toml'
     try:
         with file.open('rb') as stream:
             data = tomllib.load(stream)
     except FileNotFoundError:
+        if config['version'] == 2:
+            raise ConfigError('Workspace pair configuration is missing.') from None
         return []
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f'Invalid pairs.toml: {error}') from None
@@ -79,7 +93,7 @@ def load_pairs(paths):
         raise ConfigError('pairs.toml must contain a pairs array.')
     pairs = []
     for entry in data['pairs']:
-        if not isinstance(entry, dict) or not {'name', 'local', 'remote'} <= set(entry) or set(entry) - {'name', 'local', 'remote', 'interval', 'exclusions'}:
+        if not isinstance(entry, dict) or not {'name', 'local', 'remote'} <= set(entry) or set(entry) - {'name', 'local', 'remote', 'interval', 'exclusions', 'kind'}:
             raise ConfigError('Each pair needs name, local and remote; interval and exclusions are optional.')
         if not isinstance(entry['local'], str) or not Path(entry['local']).is_absolute():
             raise ConfigError('Saved local paths must be absolute.')
@@ -88,7 +102,7 @@ def load_pairs(paths):
             if overlaps(Path(pair.local).parts, directory.resolve().parts):
                 raise ConfigError('Local root must not overlap reicloud configuration, state or cache.')
         pairs.append(pair)
-    validate_pairs(pairs)
+    validate_pairs(pairs, config)
     return pairs
 
 
@@ -106,22 +120,27 @@ def edit_pairs(paths):
         fcntl.flock(lock, fcntl.LOCK_EX)
         pairs = load_pairs(paths)
         yield pairs
-        validate_pairs(pairs)
-        lines = ['# Managed by reicloud; comments and formatting are regenerated.\n']
-        if not pairs:
-            lines.append('pairs = []\n')
-        for pair in pairs:
-            lines.append('\n[[pairs]]\n')
-            for key, value in asdict(pair).items():
-                lines.append(f'{key} = {json.dumps(value, ensure_ascii=False)}\n')
+        validate_pairs(pairs, paths.load())
+        content = serialize_pairs(pairs)
         filename = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=paths.config, delete=False) as stream:
                 filename = stream.name
-                stream.write(''.join(lines))
+                stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(filename, paths.config / 'pairs.toml')
         finally:
             if filename and os.path.exists(filename):
                 os.unlink(filename)
+
+
+def serialize_pairs(pairs):
+    lines = ['# Managed by reicloud; comments and formatting are regenerated.\n']
+    if not pairs:
+        lines.append('pairs = []\n')
+    for pair in pairs:
+        lines.append('\n[[pairs]]\n')
+        for key, value in asdict(pair).items():
+            lines.append(f'{key} = {json.dumps(value, ensure_ascii=False)}\n')
+    return ''.join(lines)

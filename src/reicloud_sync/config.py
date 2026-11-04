@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 import os
+import re
+import tempfile
 from pathlib import Path
 import tomllib
 
@@ -53,6 +55,8 @@ class Paths:
         self.load()
 
     def load(self):
+        if (self.config / "migration.json").exists():
+            raise ConfigError("Incomplete migration. Run reicloud migrate --rollback.")
         try:
             with self.settings.open("rb") as stream:
                 data = tomllib.load(stream)
@@ -60,9 +64,32 @@ class Paths:
             raise ConfigError("Setup is missing. Run 'reicloud setup'.") from None
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"Invalid config.toml: {error}") from None
-        if type(data.get("version")) is not int or data["version"] != 1:
-            raise ConfigError("config.toml must contain version = 1.")
+        if type(data.get("version")) is not int or data["version"] not in (1, 2):
+            raise ConfigError("config.toml must contain version = 1 or 2.")
         section = data.get("dropbox")
         if not isinstance(section, dict) or section.get("remote") != "dropbox":
             raise ConfigError('config.toml must contain [dropbox] with remote = "dropbox".')
+        if data['version'] == 2:
+            computer = data.get('computer')
+            if not isinstance(computer, dict) or not isinstance(computer.get('name'), str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,55}-[0-9a-f]{6}', computer['name']):
+                raise ConfigError('Version 2 requires a stable computer name with a six-character machine ID suffix.')
         return data
+
+
+def atomic_text(file, text):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=file.parent, delete=False) as stream:
+            temporary = stream.name
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, file)
+        descriptor = os.open(file.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
