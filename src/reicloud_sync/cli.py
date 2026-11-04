@@ -1,17 +1,19 @@
 """Personal Dropbox synchronization powered by rclone."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 
 from . import __version__
 from .config import ConfigError, Paths
 from .sync import transfer, status
+from .runner import run_forever
 from .logging import get_cli_logger
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -22,12 +24,29 @@ def rclone(paths, *args, capture=False, lock_fd=None):
         raise ConfigError("rclone is missing. Install it and put it on PATH.")
     # Keep ambient rclone configuration from silently selecting another account.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("RCLONE_")}
-    return subprocess.run(
-        [executable, "--config", str(paths.credentials), *args],
-        env=environment, check=True, text=True,
-        stdout=subprocess.PIPE if capture else None,
-        pass_fds=() if lock_fd is None else (lock_fd,),
-    )
+    command = [executable, "--config", str(paths.credentials), *args]
+    if lock_fd is None:
+        return subprocess.run(command, env=environment, check=True, text=True,
+                              stdout=subprocess.PIPE if capture else None, pass_fds=())
+    with subprocess.Popen(command, env=environment, text=True,
+                          stdout=subprocess.PIPE if capture else None, pass_fds=(lock_fd,)) as process:
+        try:
+            output, _ = process.communicate()
+        except KeyboardInterrupt:
+            # The terminal or runner signals the whole group. Give bisync time to
+            # finish its own graceful shutdown instead of killing it after 250ms.
+            try:
+                output, _ = process.communicate(timeout=95)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                process.kill()
+                process.wait()
+                raise KeyboardInterrupt() from None
+            if process.returncode != 0 or args[0] != 'bisync':
+                raise
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command, output)
+        return subprocess.CompletedProcess(command, process.returncode, output)
+
 
 
 def remotes(paths):
@@ -53,6 +72,26 @@ def delete_percent(value):
     return number
 
 
+def duration(value):
+    match = re.fullmatch(r'(\d+)([smh]?)', value)
+    if not match:
+        raise argparse.ArgumentTypeError('Use a duration such as 30s, 5m or 1h.')
+    seconds = int(match[1]) * {'': 1, 's': 1, 'm': 60, 'h': 3600}[match[2]]
+    if not 1 <= seconds <= 604800:
+        raise argparse.ArgumentTypeError('Interval must be between 1 second and 7 days.')
+    return seconds
+
+
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('Expected a positive integer.') from None
+    if number < 1:
+        raise argparse.ArgumentTypeError('Expected a positive integer.')
+    return number
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="reicloud", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
@@ -72,6 +111,7 @@ def main(argv=None):
     add.add_argument("name")
     add.add_argument("local")
     add.add_argument("remote")
+    add.add_argument("--interval", type=duration, default=300, help="Sync interval (default: 5m)")
     listing = commands.add_parser("list", help="List saved folder pairs")
     listing.add_argument("--json", action="store_true")
     show = commands.add_parser("show", help="Inspect a saved folder pair")
@@ -98,6 +138,12 @@ def main(argv=None):
     state = commands.add_parser("status", help="Show persistent state and last successful run")
     state.add_argument("name")
     state.add_argument("--json", action="store_true")
+    run = commands.add_parser("run", help="Run periodic syncs in the foreground")
+    run.add_argument("--once", action="store_true", help="Sync eligible pairs once and exit")
+    run.add_argument("--jobs", type=positive_int, default=2, help="Concurrent pairs (default: 2)")
+    interval = commands.add_parser("interval", help="Change a pair's sync interval")
+    interval.add_argument("name")
+    interval.add_argument("duration", type=duration)
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -108,8 +154,19 @@ def main(argv=None):
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
             return 0
+        if args.command == "run":
+            run_forever(paths, args.jobs, once=args.once)
+            return 0
+        if args.command == "interval":
+            with edit_pairs(paths) as pairs:
+                index = next((i for i, pair in enumerate(pairs) if pair.name == args.name), None)
+                if index is None:
+                    raise ConfigError(f"Unknown pair: {args.name}")
+                pairs[index] = replace(pairs[index], interval=args.duration)
+            logger.info("Interval for %s: %s seconds", args.name, args.duration)
+            return 0
         if args.command == "add":
-            pair = make_pair(args.name, args.local, args.remote, require_directory=True)
+            pair = make_pair(args.name, args.local, args.remote, interval=args.interval, require_directory=True)
             for directory in (paths.config, paths.state, paths.cache):
                 if directory.resolve().is_relative_to(pair.local) or Path(pair.local).is_relative_to(directory.resolve()):
                     raise ConfigError("Local root must not overlap reicloud configuration, state or cache.")

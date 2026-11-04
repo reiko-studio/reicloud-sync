@@ -136,6 +136,25 @@ local folders to be mounted. Adding a pair and running a preview require the loc
 folder to be available. Actual initialization, sync and recovery also require
 both roots to be accessible.
 
+## Foreground runner
+
+```sh
+reicloud interval notes 2m
+reicloud run
+```
+
+The runner synchronizes initialized pairs immediately, then waits each pair's
+interval after completion. Existing pairs default to five minutes; use
+`add --interval 30s` or `interval NAME 30s` to configure it. Intervals accept
+seconds, minutes or hours (`30`, `30s`, `5m`, `1h`), from one second to seven days.
+Pair configuration is reloaded between scheduler ticks. Up to two independent
+pairs run concurrently; set `run --jobs N` to change this. Pair locks also protect
+manual runs. Only one runner may use a given configuration at a time.
+
+`run --once` processes eligible pairs once and exits. Ctrl+C or SIGTERM stops new
+work and asks active transfers to finish gracefully. No pair is automatically
+initialized or recovered. In this version failed pairs need manual attention.
+
 ## Configuration
 
 ```sh
