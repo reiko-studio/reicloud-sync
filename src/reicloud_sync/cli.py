@@ -23,6 +23,7 @@ from .activity import read_entries, follow, current_recorder, sanitize
 from .sync import state_dir
 from .exclusions import change as change_exclusion
 from .browse import listing as browse_listing
+from .cleanup import uninstall
 from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -188,6 +189,10 @@ def main(argv=None):
     browse.add_argument('--computer')
     browse.add_argument('--computers', action='store_true')
     browse.add_argument('--json', action='store_true')
+    cleanup = commands.add_parser('uninstall', help='Remove the service; optionally wipe local setup')
+    cleanup.add_argument('--wipe', action='store_true')
+    cleanup.add_argument('--yes', action='store_true')
+    cleanup.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -197,6 +202,9 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'uninstall':
+            print(json.dumps(uninstall(paths, wipe=args.wipe, yes=args.yes, dry_run=args.dry_run), indent=2))
             return 0
         if args.command == 'browse':
             result = browse_listing(paths, args.path, rclone, computer=args.computer, computers=args.computers)

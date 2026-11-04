@@ -212,6 +212,27 @@ the new workspace. Configuration is backed up before publishing the new profile;
 incomplete migration blocks readers and can be restored with `migrate --rollback`.
 Review local copies and the new initialization preview before production use.
 
+## Uninstall and wipe
+
+```sh
+reicloud uninstall --dry-run
+reicloud uninstall
+reicloud uninstall --wipe --dry-run
+reicloud uninstall --wipe --yes
+```
+
+`uninstall` disables/stops and removes only this configuration's managed systemd
+unit. `--wipe` also removes local settings, dedicated rclone credentials, known
+configuration backups and history/log directories provably owned by this profile.
+Review the preview first; destructive wiping requires `--yes`.
+
+Synchronized local folders, Dropbox contents, access markers inside those folders,
+other profiles, unknown files and the installed CLI/rpy environment are preserved.
+Empty application directories are pruned. Foreground runners and active manual
+syncs block wiping; symlinked stores and unmanaged service files are rejected.
+Ambiguous old state directories are preserved rather than guessed to be owned.
+Removing credentials disconnects this local setup; it does not remove remote data.
+
 ## Tests
 
 ```sh
