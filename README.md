@@ -162,6 +162,22 @@ also requires preview/application for an initialized pair. `status` and
 `exclusions --json` show pending changes. Failed history is retained when rules
 are applied; the runner never applies rules or resyncs automatically.
 
+## Activity logs
+
+```sh
+reicloud logs notes
+reicloud logs notes --lines 100 --follow
+reicloud logs notes --json
+```
+
+Per-pair logs contain operation start/completion/failure events and live rclone
+transfer diagnostics. JSON output is one object per line. Logs rotate at 1 MiB
+with three backups, under the pair's private state directory. Log files are
+created with mode `0600`. Previews are recorded but do not alter trusted history.
+OAuth setup output is never recorded; credential-related diagnostic lines are
+redacted. Logs may contain file names. A logging failure warns once for that
+operation and does not turn a completed transfer into a sync failure.
+
 ## Foreground runner
 
 ```sh

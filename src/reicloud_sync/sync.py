@@ -17,6 +17,7 @@ from .pairs import find_pair, make_pair
 from .logging import get_cli_logger
 from .scheduling import read_schedule, runner_active
 from .exclusions import pending, fingerprint, filter_arguments
+from .activity import activity_scope
 
 MARKER = '.reicloud-sync-access'
 
@@ -173,7 +174,7 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
         fcntl.flock(config_lock, fcntl.LOCK_SH)
         pair = find_pair(paths, name)
         directory = state_dir(paths, pair)
-        with pair_lock(directory) as lock_fd:
+        with pair_lock(directory) as lock_fd, activity_scope(directory, name, operation, dry_run):
             state = read_state(directory)
             if operation == 'sync' and read_control(directory)['paused'] and not dry_run:
                 raise ConfigError(f'Pair {name} is paused. Run reicloud resume {name} first.')

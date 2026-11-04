@@ -18,6 +18,8 @@ from .runner import run_forever
 from .processes import run_locked
 from .service import install as install_service, control as control_service
 from .logging import get_cli_logger
+from .activity import read_entries, follow, current_recorder, sanitize
+from .sync import state_dir
 from .exclusions import change as change_exclusion
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -37,6 +39,10 @@ def rclone(paths, *args, capture=False, lock_fd=None):
         except subprocess.CalledProcessError as error:
             if error.stderr:
                 sys.stderr.write(error.stderr)
+                recorder = current_recorder()
+                if recorder:
+                    for line in error.stderr.splitlines():
+                        recorder.record('rclone', message=sanitize(line))
             raise
     return run_locked(command, environment, capture, lock_fd, bisync=args[0] == 'bisync')
 
@@ -157,6 +163,11 @@ def main(argv=None):
     exclusions.add_argument('--apply', action='store_true')
     exclusions.add_argument('--prefer', choices=['local', 'remote'])
     exclusions.add_argument('--dry-run', action='store_true')
+    logs = commands.add_parser('logs', help='Read a pair activity log')
+    logs.add_argument('name')
+    logs.add_argument('--lines', type=positive_int, default=50)
+    logs.add_argument('--follow', action='store_true')
+    logs.add_argument('--json', action='store_true', help='Output JSON lines')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -166,6 +177,14 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'logs':
+            pair = find_pair(paths, args.name)
+            directory = state_dir(paths, pair)
+            entries = follow(directory, args.lines) if args.follow else read_entries(directory, args.lines)
+            for entry in entries:
+                print(json.dumps(entry) if args.json else
+                      f"{entry['time']} {entry['event']}: {entry.get('message') or entry.get('operation', '')}", flush=True)
             return 0
         if args.command in ('exclude', 'include'):
             change_exclusion(paths, args.name, args.pattern, remove=args.command == 'include')

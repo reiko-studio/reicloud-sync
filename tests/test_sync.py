@@ -61,7 +61,7 @@ class SyncTests(unittest.TestCase):
         return json.loads(self.invoke('status', 'test', '--json')[1])
 
     def snapshot(self, root):
-        return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+        return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file() and not (root == self.directory and p.name.startswith('activity.'))}
 
     def test_initialize_upload_download_and_restarted_sync(self):
         self.initialize()
