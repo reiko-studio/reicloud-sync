@@ -1,4 +1,7 @@
-"""Setup and authentication commands; transfers are not implemented yet."""
+"""Personal Dropbox synchronization powered by rclone."""
+
+from dataclasses import asdict
+from pathlib import Path
 
 import argparse
 import json
@@ -8,10 +11,12 @@ import subprocess
 
 from . import __version__
 from .config import ConfigError, Paths
+from .sync import transfer, status
 from .logging import get_cli_logger
+from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
 
-def rclone(paths, *args, capture=False):
+def rclone(paths, *args, capture=False, lock_fd=None):
     executable = shutil.which("rclone")
     if not executable:
         raise ConfigError("rclone is missing. Install it and put it on PATH.")
@@ -21,6 +26,7 @@ def rclone(paths, *args, capture=False):
         [executable, "--config", str(paths.credentials), *args],
         env=environment, check=True, text=True,
         stdout=subprocess.PIPE if capture else None,
+        pass_fds=() if lock_fd is None else (lock_fd,),
     )
 
 
@@ -35,6 +41,16 @@ def check_dropbox(paths):
     # Discard directory names: this verifies access without exposing account contents.
     rclone(paths, "lsf", "dropbox:", "--max-depth", "1", capture=True)
     get_cli_logger().info("Dropbox access verified. No files were transferred.")
+
+
+def delete_percent(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('Deletion percentage must be an integer from 0 to 100.') from None
+    if not 0 <= number <= 100:
+        raise argparse.ArgumentTypeError('Deletion percentage must be an integer from 0 to 100.')
+    return number
 
 
 def main(argv=None):
@@ -52,6 +68,36 @@ def main(argv=None):
     login.add_argument("provider", choices=["dropbox"])
     check = commands.add_parser("check", help="Verify read-only remote access")
     check.add_argument("provider", choices=["dropbox"])
+    add = commands.add_parser("add", help="Register a folder pair without transferring files")
+    add.add_argument("name")
+    add.add_argument("local")
+    add.add_argument("remote")
+    listing = commands.add_parser("list", help="List saved folder pairs")
+    listing.add_argument("--json", action="store_true")
+    show = commands.add_parser("show", help="Inspect a saved folder pair")
+    show.add_argument("name")
+    show.add_argument("--json", action="store_true")
+    remove = commands.add_parser("remove", help="Unregister a pair; leave files untouched")
+    remove.add_argument("name")
+    init = commands.add_parser("init", help="Initialize two-way synchronization (use --dry-run to preview)")
+    init.add_argument("name")
+    init.add_argument("--dry-run", action="store_true")
+    init.add_argument("--prefer", choices=["local", "remote"], required=True,
+                      help="Which side would win when the same file differs during initialization")
+    sync = commands.add_parser("sync", help="Synchronize an initialized pair")
+    sync.add_argument("name")
+    sync.add_argument("--dry-run", action="store_true")
+    sync.add_argument("--max-delete", type=delete_percent, default=50, metavar="PERCENT",
+                      help="Maximum deletion percentage on either side for this run (default: 50)")
+    sync.add_argument("--retry", action="store_true",
+                      help="Retry a previous failed sync using existing history; never resync")
+    recover = commands.add_parser("recover", help="Explicitly reinitialize after a failed/interrupted operation")
+    recover.add_argument("name")
+    recover.add_argument("--prefer", choices=["local", "remote"], required=True)
+    recover.add_argument("--dry-run", action="store_true")
+    state = commands.add_parser("status", help="Show persistent state and last successful run")
+    state.add_argument("name")
+    state.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -61,6 +107,44 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == "add":
+            pair = make_pair(args.name, args.local, args.remote, require_directory=True)
+            for directory in (paths.config, paths.state, paths.cache):
+                if directory.resolve().is_relative_to(pair.local) or Path(pair.local).is_relative_to(directory.resolve()):
+                    raise ConfigError("Local root must not overlap reicloud configuration, state or cache.")
+            with edit_pairs(paths) as pairs:
+                pairs.append(pair)
+            logger.info("Registered pair %s. No files were transferred.", pair.name)
+            return 0
+        if args.command in ("list", "show"):
+            pairs = [find_pair(paths, args.name)] if args.command == "show" else load_pairs(paths)
+            data = [asdict(pair) for pair in pairs]
+            if args.json:
+                print(json.dumps(data[0] if args.command == "show" else data, indent=2))
+            elif not pairs:
+                print("No folder pairs configured.")
+            else:
+                for pair in pairs:
+                    print(f"{pair.name}: {pair.local} <-> {pair.remote}")
+            return 0
+        if args.command == "remove":
+            with edit_pairs(paths) as pairs:
+                pair = next((pair for pair in pairs if pair.name == args.name), None)
+                if pair is None:
+                    raise ConfigError(f"Unknown pair: {args.name}")
+                pairs.remove(pair)
+            logger.info("Unregistered %s. Local and remote files were left untouched.", args.name)
+            return 0
+        if args.command in ("init", "sync", "recover"):
+            paths.load()
+            transfer(paths, args.name, args.command, getattr(args, 'prefer', None), args.dry_run, rclone,
+                     retry=getattr(args, 'retry', False), max_delete=getattr(args, 'max_delete', 50))
+            return 0
+        if args.command == "status":
+            data = status(paths, args.name)
+            print(json.dumps(data, indent=2) if args.json else
+                  f"{data['name']}: {data['phase']}\nActive: {data['active']}\nLast success: {data.get('last_success') or 'never'}\nError: {data.get('error') or 'none'}")
             return 0
         if args.command == "setup":
             paths.initialize()
@@ -84,7 +168,7 @@ def main(argv=None):
             paths.load()
             check_dropbox(paths)
         elif args.command == "config":
-            paths.load()
+            load_pairs(paths)
             if args.json:
                 print(json.dumps({"valid": True}))
             else:
