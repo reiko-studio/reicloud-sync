@@ -178,6 +178,23 @@ OAuth setup output is never recorded; credential-related diagnostic lines are
 redacted. Logs may contain file names. A logging failure warns once for that
 operation and does not turn a completed transfer into a sync failure.
 
+## Desktop notifications
+
+```sh
+reicloud notifications on
+reicloud notifications test
+reicloud notifications off
+```
+
+Desktop alerts are off by default and require `notify-send` plus an available
+desktop notification session. The background runner alerts once per incident
+that needs attention (including safety/critical errors), then reports recovery
+after a later successful scheduled sync. Transient retries do not create repeated
+popups. Delivery attempts are deduplicated across runner restarts. Alert bodies
+use pair names and status guidance, not file names or provider diagnostics.
+Missing desktop tools/session or failed delivery does not stop synchronization.
+`notifications test` sends a test alert even while notifications are disabled.
+
 ## Foreground runner
 
 ```sh

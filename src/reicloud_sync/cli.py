@@ -18,6 +18,7 @@ from .runner import run_forever
 from .processes import run_locked
 from .service import install as install_service, control as control_service
 from .logging import get_cli_logger
+from .notifications import enabled as notifications_enabled, configure as configure_notifications, send as send_notification
 from .activity import read_entries, follow, current_recorder, sanitize
 from .sync import state_dir
 from .exclusions import change as change_exclusion
@@ -168,6 +169,8 @@ def main(argv=None):
     logs.add_argument('--lines', type=positive_int, default=50)
     logs.add_argument('--follow', action='store_true')
     logs.add_argument('--json', action='store_true', help='Output JSON lines')
+    notifications = commands.add_parser('notifications', help='Configure optional desktop alerts')
+    notifications.add_argument('action', choices=['on', 'off', 'status', 'test'])
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -177,6 +180,16 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'notifications':
+            paths.load()
+            if args.action in ('on', 'off'):
+                configure_notifications(paths, args.action == 'on')
+                logger.info('Desktop notifications %s.', args.action)
+            elif args.action == 'test':
+                send_notification('Reicloud notification test', 'Desktop notifications are working.')
+            else:
+                print('enabled' if notifications_enabled(paths) else 'disabled')
             return 0
         if args.command == 'logs':
             pair = find_pair(paths, args.name)

@@ -16,6 +16,7 @@ from .logging import get_cli_logger
 from .pairs import load_pairs
 from .sync import state_dir, status, read_control, write_state
 from .scheduling import runner_lock_path, read_schedule
+from .notifications import attention, recovered
 
 
 def start_worker(paths, pair):
@@ -90,6 +91,7 @@ class Runner:
     def completed(self, key, job, code, pair):
         self.logger.info('Scheduled sync %s exited with code %s.', job.pair.name, code)
         if code == 0:
+            recovered(self.paths, pair)
             self.failures.pop(key, None)
             self.blocked.pop(key, None)
             self.due[key] = self.clock() + pair.interval
@@ -108,6 +110,7 @@ class Runner:
         else:
             self.failures[key] = self.failures.get(key, 0) + 1
             self.blocked[key] = self.signature(state)
+            attention(self.paths, pair, state)
             self.logger.error('%s needs manual attention; other pairs will continue.', pair.name)
 
     def tick(self, *, once=False):
@@ -158,8 +161,11 @@ class Runner:
                 if state['active'] or state.get('filters_pending'):
                     continue
                 if state['phase'] not in ('ready', 'retryable_error'):
+                    if state['phase'] == 'needs_recovery':
+                        attention(self.paths, pair, state)
                     continue
                 if state['phase'] == 'retryable_error' and not state.get('automatic_retry'):
+                    attention(self.paths, pair, state)
                     continue
                 if not once and self.due.get(key, 0) > self.clock():
                     continue
