@@ -3,7 +3,7 @@
 A Linux-first personal cloud sync manager powered by rclone. Part of Reiko Studio.
 
 Currently implements configuration setup, Dropbox login, named folder pairs,
-manual two-way synchronization and explicit recovery. Background services are planned.
+manual two-way synchronization, background scheduling and explicit recovery.
 
 ## Development install
 
@@ -191,6 +191,44 @@ eligible; `scheduled_for` retains its saved deadline while the runner is stopped
 Pausing hides the next run without erasing history. Historical last-error details
 remain visible after a later successful sync. Broken state for one pair is
 reported separately when listing all pairs.
+
+## Systemd user service
+
+Preview the unit, then install and start it when ready:
+
+```sh
+reicloud service install --dry-run
+reicloud service install
+reicloud service start
+reicloud service status
+```
+
+Installation writes a unit in your XDG systemd user directory, reloads the user
+manager and enables it for future user sessions. It does not start or restart the
+service. `start` begins syncing initialized, unpaused pairs. Each configuration
+gets its own unit name. No root privileges are needed.
+
+```sh
+reicloud service stop
+reicloud service disable
+reicloud service enable
+reicloud service path
+journalctl --user -u "$(basename "$(reicloud service path)")" -f
+```
+
+`stop` stops the current runner; `disable` prevents startup in future sessions
+without stopping a currently running service. Use both to stop it permanently.
+`enable` restores startup for future sessions. The unit uses the Python environment
+from installation, an explicit config path and the current state/cache locations.
+Reinstall after moving or replacing that environment. `service install --jobs N`
+sets the worker concurrency for the unit. Keep application settings in reicloud's
+config files; reinstallation regenerates a managed unit and refuses to replace an
+unmanaged unit or symlink.
+
+Systemd captures logs in the user journal and restarts an unexpectedly failed
+runner. On stop it gives the runner time to shut transfers down gracefully before
+forcing termination. Without user lingering, startup and lifetime follow your
+system's user-session policy; installation does not change that policy.
 
 ## Configuration
 

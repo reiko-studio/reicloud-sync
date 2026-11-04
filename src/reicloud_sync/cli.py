@@ -16,6 +16,7 @@ from .config import ConfigError, Paths
 from .sync import transfer, status, set_paused
 from .runner import run_forever
 from .processes import run_locked
+from .service import install as install_service, control as control_service
 from .logging import get_cli_logger
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -138,6 +139,13 @@ def main(argv=None):
     for action in ('pause', 'resume'):
         control = commands.add_parser(action, help=f'{action.capitalize()} future syncs for a pair')
         control.add_argument('name')
+    service = commands.add_parser('service', help='Install or control the systemd user service')
+    actions = service.add_subparsers(dest='service_action', required=True)
+    installation = actions.add_parser('install', help='Write and enable the user unit without starting it')
+    installation.add_argument('--dry-run', action='store_true', help='Print unit without writing or enabling it')
+    installation.add_argument('--jobs', type=positive_int, default=2)
+    for action in ('start', 'stop', 'status', 'path', 'enable', 'disable'):
+        actions.add_parser(action)
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -147,6 +155,12 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'service':
+            if args.service_action == 'install':
+                install_service(paths, args.jobs, dry_run=args.dry_run)
+            else:
+                control_service(paths, args.service_action)
             return 0
         if args.command in ('pause', 'resume'):
             set_paused(paths, args.name, args.command == 'pause')
@@ -258,7 +272,8 @@ def main(argv=None):
         logger.error("%s", error)
         return 1
     except subprocess.CalledProcessError as error:
-        logger.error("rclone failed (exit %s). Check the diagnostic above; the operation did not complete.", error.returncode)
+        program = Path(error.cmd[0]).name if isinstance(error.cmd, (list, tuple)) else 'Command'
+        logger.error("%s failed (exit %s). Check the diagnostic above; the operation did not complete.", program, error.returncode)
         return 1
     except KeyboardInterrupt:
         logger.warning("Cancelled.")
