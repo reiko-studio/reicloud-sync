@@ -35,7 +35,7 @@ class Job:
 
 
 class Runner:
-    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker, wall_clock=time.time):
+    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker, wall_clock=time.time, watcher=None):
         self.paths = paths
         self.jobs = jobs
         self.clock = clock
@@ -53,6 +53,8 @@ class Runner:
         self.had_failures = False
         self.errors = {}
         self.logger = get_cli_logger()
+        self.watcher = watcher
+        self.dirty = {}
 
     def load_schedule(self, key, pair):
         if key in self.loaded:
@@ -67,8 +69,14 @@ class Runner:
             self.blocked[key] = tuple(data['blocked_signature'])
         self.loaded.add(key)
 
+    def effective_due(self, key):
+        due = self.due.get(key, 0)
+        if key in self.dirty and not self.failures.get(key):
+            due = min(due, self.dirty[key])
+        return due
+
     def save_schedule(self, key, pair):
-        due = self.due.get(key)
+        due = self.effective_due(key) if key in self.due or key in self.dirty else None
         next_run = None if due is None or key in self.active or key in self.blocked else datetime.fromtimestamp(
             self.wall_clock() + due - self.clock(), timezone.utc).isoformat()
         previous = self.schedules.get(key, {})
@@ -115,6 +123,10 @@ class Runner:
 
     def tick(self, *, once=False):
         pairs = load_pairs(self.paths)
+        if self.watcher:
+            for key in self.watcher.drain():
+                self.dirty[key] = self.clock() + 2
+        watched = []
         known = {str(state_dir(self.paths, pair)): pair for pair in pairs}
         for key, pair in known.items():
             try:
@@ -148,7 +160,12 @@ class Runner:
                 self.controls[key] = control
                 if previous is not None and previous != control and not control['paused']:
                     self.due.pop(key, None)
-                if control['paused'] or key in self.active or (once and key in self.attempted):
+                if control['paused']:
+                    continue
+                if key in self.active:
+                    watched.append(pair)
+                    continue
+                if once and key in self.attempted:
                     continue
                 state = status(self.paths, pair.name)
                 signature = self.signature(state)
@@ -158,7 +175,10 @@ class Runner:
                     self.blocked.pop(key)
                     self.failures.pop(key, None)
                     self.due.pop(key, None)
-                if state['active'] or state.get('filters_pending'):
+                if state.get('filters_pending'):
+                    continue
+                if state['active']:
+                    watched.append(pair)
                     continue
                 if state['phase'] not in ('ready', 'retryable_error'):
                     if state['phase'] == 'needs_recovery':
@@ -167,13 +187,15 @@ class Runner:
                 if state['phase'] == 'retryable_error' and not state.get('automatic_retry'):
                     attention(self.paths, pair, state)
                     continue
-                if not once and self.due.get(key, 0) > self.clock():
+                watched.append(pair)
+                if not once and self.effective_due(key) > self.clock():
                     continue
                 pending = True
                 if len(self.active) >= self.jobs:
                     continue
                 self.logger.info('Starting scheduled sync: %s', pair.name)
                 self.attempted.add(key)
+                self.dirty.pop(key, None)
                 try:
                     self.active[key] = Job(pair, self.worker(self.paths, pair))
                 except OSError:
@@ -185,6 +207,8 @@ class Runner:
                 if self.errors.get(key) != str(error):
                     self.logger.error('%s: %s', pair.name, error)
                     self.errors[key] = str(error)
+        if self.watcher:
+            self.watcher.refresh(watched)
         for key, pair in known.items():
             try:
                 self.save_schedule(key, pair)
@@ -194,6 +218,8 @@ class Runner:
         return bool(self.active) or pending
 
     def stop(self):
+        if self.watcher:
+            self.watcher.close()
         for job in self.active.values():
             if job.process.poll() is None:
                 try:
@@ -223,11 +249,17 @@ def runner_lock(paths):
         yield
 
 
-def run_forever(paths, jobs=2, *, once=False):
+def run_forever(paths, jobs=2, *, once=False, watching=False):
     paths.load()
     stopped = threading.Event()
     previous = {}
-    runner = Runner(paths, jobs)
+    if once and watching:
+        raise ConfigError('--watch is for continuous operation; omit --once.')
+    watcher = None
+    if watching:
+        from .watching import WatchManager
+        watcher = WatchManager(paths)
+    runner = Runner(paths, jobs, watcher=watcher)
     with runner_lock(paths):
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):

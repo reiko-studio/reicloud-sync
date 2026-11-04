@@ -195,6 +195,36 @@ use pair names and status guidance, not file names or provider diagnostics.
 Missing desktop tools/session or failed delivery does not stop synchronization.
 `notifications test` sends a test alert even while notifications are disabled.
 
+## Local watching
+
+```sh
+reicloud run --watch
+```
+
+Watching uses watchfiles to notice local changes recursively, then coalesces
+bursts into a sync after roughly two quiet seconds (plus watcher/scheduler
+latency). Periodic scans still detect changes made in Dropbox. Plain `run` keeps
+using intervals only.
+
+Events during an active transfer produce at most one pending follow-up scan;
+this also catches local edits made during a download. Local events never bypass
+pause, staged exclusions, critical failures, deletion limits or retry backoff.
+Watch errors fall back to periodic synchronization and retry attaching a watcher.
+Excluded-path events may trigger a scan, but the same exclusion rules still
+control transfers. No `.gitignore` or hidden-file defaults are silently added.
+
+For a service, regenerate its unit with watching enabled, then restart it:
+
+```sh
+reicloud service install --watch
+reicloud service stop
+reicloud service start
+```
+
+Reinstalling without `--watch` returns the unit to interval-only operation.
+Watching needs an available filesystem-notification backend; watchfiles may use
+polling on unsupported filesystems. `run --once` cannot be combined with `--watch`.
+
 ## Foreground runner
 
 ```sh

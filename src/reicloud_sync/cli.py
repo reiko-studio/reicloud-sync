@@ -139,6 +139,7 @@ def main(argv=None):
     state.add_argument("name", nargs="?", help="Omit to show all pairs")
     state.add_argument("--json", action="store_true")
     run = commands.add_parser("run", help="Run periodic syncs in the foreground")
+    run.add_argument("--watch", action="store_true", help="Trigger earlier syncs on local changes")
     run.add_argument("--once", action="store_true", help="Sync eligible pairs once and exit")
     run.add_argument("--jobs", type=positive_int, default=2, help="Concurrent pairs (default: 2)")
     interval = commands.add_parser("interval", help="Change a pair's sync interval")
@@ -152,6 +153,7 @@ def main(argv=None):
     installation = actions.add_parser('install', help='Write and enable the user unit without starting it')
     installation.add_argument('--dry-run', action='store_true', help='Print unit without writing or enabling it')
     installation.add_argument('--jobs', type=positive_int, default=2)
+    installation.add_argument('--watch', action='store_true')
     for action in ('start', 'stop', 'status', 'path', 'enable', 'disable'):
         actions.add_parser(action)
     for action in ('exclude', 'include'):
@@ -218,7 +220,7 @@ def main(argv=None):
             return 0
         if args.command == 'service':
             if args.service_action == 'install':
-                install_service(paths, args.jobs, dry_run=args.dry_run)
+                install_service(paths, args.jobs, dry_run=args.dry_run, watching=args.watch)
             else:
                 control_service(paths, args.service_action)
             return 0
@@ -226,7 +228,7 @@ def main(argv=None):
             set_paused(paths, args.name, args.command == 'pause')
             return 0
         if args.command == "run":
-            return run_forever(paths, args.jobs, once=args.once)
+            return run_forever(paths, args.jobs, once=args.once, watching=args.watch)
         if args.command == "interval":
             with edit_pairs(paths) as pairs:
                 index = next((i for i, pair in enumerate(pairs) if pair.name == args.name), None)

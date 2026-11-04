@@ -33,7 +33,7 @@ def quote(value, *, command=False):
     return '"' + value + '"'
 
 
-def render_unit(paths, jobs=2):
+def render_unit(paths, jobs=2, *, watching=False):
     executable = Path(sys.executable).absolute()
     search = os.environ.get('PATH', os.defpath).split(os.pathsep)
     search += ['/usr/local/bin', '/usr/bin', '/bin']
@@ -43,6 +43,8 @@ def render_unit(paths, jobs=2):
                    'XDG_CACHE_HOME': str(paths.cache.parent)}
     command = [str(executable), '-m', 'reicloud_sync', '--config-dir', str(paths.config),
                'run', '--jobs', str(jobs)]
+    if watching:
+        command.append('--watch')
     lines = [HEADER, '[Unit]\n', 'Description=Reicloud personal cloud synchronization\n',
              '\n[Service]\n', 'Type=simple\n', 'UMask=0077\n']
     lines += [f'Environment={quote(key + "=" + value)}\n' for key, value in environment.items()]
@@ -60,9 +62,9 @@ def systemctl(*arguments):
     return subprocess.run([executable, '--user', *arguments], check=True)
 
 
-def install(paths, jobs=2, *, dry_run=False):
+def install(paths, jobs=2, *, dry_run=False, watching=False):
     paths.load()
-    content = render_unit(paths, jobs)
+    content = render_unit(paths, jobs, watching=watching)
     if dry_run:
         print(content, end='')
         return
