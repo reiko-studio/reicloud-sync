@@ -155,7 +155,7 @@ class Runner:
                     self.blocked.pop(key)
                     self.failures.pop(key, None)
                     self.due.pop(key, None)
-                if state['active']:
+                if state['active'] or state.get('filters_pending'):
                     continue
                 if state['phase'] not in ('ready', 'retryable_error'):
                     continue

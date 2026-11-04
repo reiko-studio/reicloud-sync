@@ -18,6 +18,7 @@ from .runner import run_forever
 from .processes import run_locked
 from .service import install as install_service, control as control_service
 from .logging import get_cli_logger
+from .exclusions import change as change_exclusion
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
 
@@ -146,6 +147,16 @@ def main(argv=None):
     installation.add_argument('--jobs', type=positive_int, default=2)
     for action in ('start', 'stop', 'status', 'path', 'enable', 'disable'):
         actions.add_parser(action)
+    for action in ('exclude', 'include'):
+        exclusions = commands.add_parser(action, help='Stage an exclusion rule change')
+        exclusions.add_argument('name')
+        exclusions.add_argument('pattern')
+    exclusions = commands.add_parser('exclusions', help='List or deliberately apply staged exclusion changes')
+    exclusions.add_argument('name')
+    exclusions.add_argument('--json', action='store_true')
+    exclusions.add_argument('--apply', action='store_true')
+    exclusions.add_argument('--prefer', choices=['local', 'remote'])
+    exclusions.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -155,6 +166,23 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command in ('exclude', 'include'):
+            change_exclusion(paths, args.name, args.pattern, remove=args.command == 'include')
+            logger.info('Exclusion change saved for %s. Existing history requires explicit application.', args.name)
+            return 0
+        if args.command == 'exclusions':
+            if args.apply:
+                if not args.prefer:
+                    raise ConfigError('--apply requires --prefer local or --prefer remote. Preview with --dry-run first.')
+                transfer(paths, args.name, 'filters', args.prefer, args.dry_run, rclone)
+            else:
+                if args.dry_run or args.prefer:
+                    raise ConfigError('--dry-run and --prefer require --apply.')
+                data = status(paths, args.name)
+                result = {'exclusions': data['exclusions'], 'pending': data['filters_pending']}
+                print(json.dumps(result, indent=2) if args.json else
+                      '\n'.join(result['exclusions']) + f"\nPending application: {result['pending']}")
             return 0
         if args.command == 'service':
             if args.service_action == 'install':
@@ -226,6 +254,7 @@ def main(argv=None):
                 for data in rows:
                     print(f"{data['name']}: {data['phase']}"
                           f"\nPaused: {data.get('paused', False)}"
+                          f"\nExclusion changes pending: {data.get('filters_pending', False)}"
                           f"\nActive: {data.get('active', False)}"
                           f"\nRunner: {'running' if data.get('runner_active') else 'stopped'}"
                           f"\nInterval: {data.get('interval_seconds', 'unknown')} seconds"

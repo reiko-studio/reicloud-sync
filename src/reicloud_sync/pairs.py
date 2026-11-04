@@ -20,9 +20,12 @@ class Pair:
     local: str
     remote: str
     interval: int = 300
+    exclusions: tuple[str, ...] = ()
 
 
-def make_pair(name, local, remote, interval=300, *, require_directory=False):
+def make_pair(name, local, remote, interval=300, exclusions=(), *, require_directory=False):
+    from .exclusions import validate_patterns
+    exclusions = validate_patterns(exclusions)
     if type(interval) is not int or not 1 <= interval <= 604800:
         raise ConfigError("Interval must be an integer from 1 to 604800 seconds.")
     if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}', name):
@@ -40,7 +43,7 @@ def make_pair(name, local, remote, interval=300, *, require_directory=False):
     parts = [part for part in raw.split('/') if part and part != '.']
     if '..' in parts:
         raise ConfigError('Remote path must not contain .. components.')
-    return Pair(name, str(path), 'dropbox:' + '/'.join(parts), interval)
+    return Pair(name, str(path), 'dropbox:' + '/'.join(parts), interval, exclusions)
 
 
 def remote_parts(remote):
@@ -76,8 +79,8 @@ def load_pairs(paths):
         raise ConfigError('pairs.toml must contain a pairs array.')
     pairs = []
     for entry in data['pairs']:
-        if not isinstance(entry, dict) or not {'name', 'local', 'remote'} <= set(entry) or set(entry) - {'name', 'local', 'remote', 'interval'}:
-            raise ConfigError('Each pair needs name, local and remote; interval is optional.')
+        if not isinstance(entry, dict) or not {'name', 'local', 'remote'} <= set(entry) or set(entry) - {'name', 'local', 'remote', 'interval', 'exclusions'}:
+            raise ConfigError('Each pair needs name, local and remote; interval and exclusions are optional.')
         if not isinstance(entry['local'], str) or not Path(entry['local']).is_absolute():
             raise ConfigError('Saved local paths must be absolute.')
         pair = make_pair(**entry)

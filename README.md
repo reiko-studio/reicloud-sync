@@ -136,6 +136,32 @@ local folders to be mounted. Adding a pair and running a preview require the loc
 folder to be available. Actual initialization, sync and recovery also require
 both roots to be accessible.
 
+## Exclusions
+
+```sh
+reicloud exclude notes '.venv/**'
+reicloud exclude notes '__pycache__/**'
+reicloud exclusions notes
+reicloud exclusions notes --apply --prefer local --dry-run
+reicloud exclusions notes --apply --prefer local
+```
+
+Rules use rclone glob syntax (quote patterns to prevent shell expansion), not
+`.gitignore` syntax. They exclude matching paths in both directions. No rules are
+enabled by default. The reserved access marker is always included.
+
+For initialized pairs, changes are staged: scheduled and manual sync stop until
+you explicitly apply them. Application rebuilds selection history and combines
+included files using `--prefer`; review the preview for competing versions and
+previously deleted files that could reappear. Excluded existing files remain on
+both sides; they are never deleted just because they became excluded. Before
+initialization, rules take effect on the first `init`.
+
+`reicloud include notes '.venv/**'` removes that exclusion rule. Removing a rule
+also requires preview/application for an initialized pair. `status` and
+`exclusions --json` show pending changes. Failed history is retained when rules
+are applied; the runner never applies rules or resyncs automatically.
+
 ## Foreground runner
 
 ```sh

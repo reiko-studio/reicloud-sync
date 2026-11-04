@@ -16,6 +16,7 @@ from .config import ConfigError
 from .pairs import find_pair, make_pair
 from .logging import get_cli_logger
 from .scheduling import read_schedule, runner_active
+from .exclusions import pending, fingerprint, filter_arguments
 
 MARKER = '.reicloud-sync-access'
 
@@ -92,11 +93,12 @@ def status(paths, name):
     control = read_control(directory)
     schedule = read_schedule(directory)
     running = runner_active(paths)
-    next_run = schedule.get('next_run') if (running and not control['paused'] and not active
+    next_run = schedule.get('next_run') if (running and not control['paused'] and not active and not pending(pair, state)
                and (state['phase'] == 'ready' or (state['phase'] == 'retryable_error' and state.get('automatic_retry')))
                and not schedule.get('blocked_signature')) else None
     return dict(state, name=pair.name, active=active, state_dir=str(directory),
                 paused=control['paused'], interval_seconds=pair.interval,
+                exclusions=list(pair.exclusions), filters_pending=pending(pair, state),
                 runner_active=running, next_run=next_run,
                 scheduled_for=schedule.get('next_run'),
                 consecutive_failures=schedule.get('failures', 0),
@@ -175,6 +177,12 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
             state = read_state(directory)
             if operation == 'sync' and read_control(directory)['paused'] and not dry_run:
                 raise ConfigError(f'Pair {name} is paused. Run reicloud resume {name} first.')
+            if pending(pair, state) and operation in ('sync', 'recover'):
+                raise ConfigError(f'Exclusions changed. Preview and apply with reicloud exclusions {name} --apply --prefer local --dry-run.')
+            if operation == 'filters' and state['phase'] == 'uninitialized':
+                raise ConfigError('Pair is uninitialized. Rules will be applied by init.')
+            if operation == 'filters' and not pending(pair, state):
+                raise ConfigError('No exclusion changes to apply.')
             if operation == 'init' and state['phase'] != 'uninitialized':
                 raise ConfigError('Pair already has sync state. Use sync, or explicitly recover after inspecting the previous failure.')
             retry_old_failure = (retry and state['phase'] == 'needs_recovery'
@@ -214,7 +222,8 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                     else:
                         preview.mkdir()
                     run(paths, 'bisync', pair.local, pair.remote, *arguments,
-                        '--workdir', str(preview), '--dry-run', lock_fd=lock_fd)
+                        '--workdir', str(preview), '--dry-run',
+                        *filter_arguments(preview, pair, state, operation), lock_fd=lock_fd)
                 logger.info('Preview complete. Persistent sync history was not changed.')
                 return
             state = dict(state, phase='running', operation=operation,
@@ -234,17 +243,20 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                         lock_fd=lock_fd)
                 workdir.mkdir(exist_ok=True, mode=0o700)
                 # Explicit recovery gets fresh history, retaining failed history for inspection.
-                if operation == 'recover':
+                if operation in ('recover', 'filters'):
                     suffix = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
-                    workdir.rename(directory / f'bisync-before-recovery-{suffix}')
+                    workdir.rename(directory / f'bisync-before-{"recovery" if operation == "recover" else "filters"}-{suffix}')
                     workdir.mkdir(mode=0o700)
                 run(paths, 'bisync', pair.local, pair.remote, *arguments,
-                    '--workdir', str(workdir), lock_fd=lock_fd)
+                    '--workdir', str(workdir),
+                    *filter_arguments(workdir, pair, state, operation), lock_fd=lock_fd)
             except BaseException as error:
                 record_failure(directory, state, error, operation)
                 raise
             state.update(phase='ready', finished=now(), last_success=now(), error=None, exit_code=0,
                          failure_kind=None, automatic_retry=False)
+            if operation != 'sync' or pair.exclusions or 'filters_hash' in state:
+                state['filters_hash'] = fingerprint(pair.exclusions)
             write_state(directory, state)
             logger.info('%s complete for %s. Last successful run: %s', operation, name, state['last_success'])
 
