@@ -43,6 +43,7 @@ class SyncTests(unittest.TestCase):
                                 text=True, capture_output=True,
                                 pass_fds=() if lock_fd is None else (lock_fd,))
         if result.returncode:
+            self.last_rclone_error = result.stderr
             raise subprocess.CalledProcessError(result.returncode, ['rclone'], result.stdout, result.stderr)
         return result
 
@@ -55,7 +56,7 @@ class SyncTests(unittest.TestCase):
 
     def assertSuccess(self, *args):
         code, output = self.invoke(*args)
-        self.assertEqual(code, 0, output)
+        self.assertEqual(code, 0, output + getattr(self, 'last_rclone_error', ''))
 
     def saved_status(self):
         return json.loads(self.invoke('status', 'test', '--json')[1])
@@ -101,12 +102,17 @@ class SyncTests(unittest.TestCase):
             self.assertIn('competing local edit', contents)
             self.assertIn('competing remote edit of different size', contents)
 
-    def test_missing_remote_has_actionable_message_without_transfer(self):
+    def test_missing_remote_is_created_only_by_init(self):
         self.remote.rmdir()
-        code, output = self.invoke('init', 'test', '--prefer', 'local')
+        self.assertSuccess('init', 'test', '--prefer', 'local')
+        self.assertTrue(self.remote.is_dir())
+        self.assertTrue(any(call[0] == 'mkdir' for call in self.calls))
+        self.remote.rename(self.root / 'unavailable-remote')
+        self.calls.clear()
+        code, output = self.invoke('sync', 'test')
         self.assertEqual(code, 1)
-        self.assertIn('Create it in Dropbox', output)
-        self.assertFalse(any(call[0] in ('bisync', 'copyto') for call in self.calls))
+        self.assertIn('Restore it in Dropbox', output)
+        self.assertFalse(any(call[0] in ('mkdir', 'bisync', 'copyto') for call in self.calls))
 
     def test_missing_marker_blocks_sync_and_requires_deliberate_recovery(self):
         self.initialize()

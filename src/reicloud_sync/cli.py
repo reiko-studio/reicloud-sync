@@ -22,7 +22,8 @@ from .notifications import enabled as notifications_enabled, configure as config
 from .activity import read_entries, follow, current_recorder, sanitize
 from .sync import state_dir
 from .exclusions import change as change_exclusion
-from .workspace import migrate, rollback as rollback_migration, computer_name, external_remote
+from .browse import listing as browse_listing
+from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
 
@@ -125,7 +126,7 @@ def main(argv=None):
     init = commands.add_parser("init", help="Initialize two-way synchronization (use --dry-run to preview)")
     init.add_argument("name")
     init.add_argument("--dry-run", action="store_true")
-    init.add_argument("--prefer", choices=["local", "remote"], required=True,
+    init.add_argument("--prefer", choices=["local", "remote"],
                       help="Which side would win when the same file differs during initialization")
     sync = commands.add_parser("sync", help="Synchronize an initialized pair")
     sync.add_argument("name")
@@ -182,6 +183,11 @@ def main(argv=None):
     migration.add_argument('--retire-legacy-pairs', action='store_true')
     migration.add_argument('--dry-run', action='store_true')
     migration.add_argument('--rollback', action='store_true')
+    browse = commands.add_parser('browse', help='Inspect Dropbox without changing its contents')
+    browse.add_argument('path', nargs='?', default='')
+    browse.add_argument('--computer')
+    browse.add_argument('--computers', action='store_true')
+    browse.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -191,6 +197,16 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'browse':
+            result = browse_listing(paths, args.path, rclone, computer=args.computer, computers=args.computers)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(result['remote'])
+                for row in result['entries']:
+                    print(f"{row['name']}{'/' if row['directory'] else ''}  [{row['scope']}; {row['selection']}]"
+                          + (f"  mapping={row['mapping']}" if row['mapping'] else ''))
             return 0
         if args.command == 'migrate':
             if args.rollback:
@@ -331,7 +347,7 @@ def main(argv=None):
             fresh = not paths.settings.exists()
             paths.initialize()
             config = paths.load()
-            if fresh or (config['version'] == 1 and args.workspace):
+            if fresh or (config['version'] == 1 and (args.workspace or not load_pairs(paths))):
                 migrate(paths, args.workspace or '~/Dropbox', args.computer)
             elif config['version'] == 2 and (args.workspace or args.computer):
                 workspace = find_pair(paths, 'workspace')
@@ -339,6 +355,11 @@ def main(argv=None):
                         or (args.computer and computer_name(args.computer) != config['computer']['name'])):
                     raise ConfigError('Setup identity/root is already saved; it cannot be changed implicitly.')
             logger.info("Configuration ready: %s", paths.settings)
+            current = paths.load()
+            if current['version'] == 2:
+                logger.info('Computer: %s; workspace: %s', current['computer']['name'], find_pair(paths, 'workspace').local)
+            else:
+                logger.info('Legacy pairs retained. Preview reicloud migrate --dry-run before switching workflows.')
             if not args.login:
                 logger.info("Next: reicloud login dropbox")
                 return 0

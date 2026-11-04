@@ -103,6 +103,8 @@ def rollback(paths):
         raise ConfigError('No valid interrupted migration to roll back.') from None
     if not backup.resolve().is_relative_to((paths.config / 'backups').resolve()) or backup.is_symlink():
         raise ConfigError('Invalid migration backup directory.')
+    if not (backup / 'config.toml').is_file() or (backup / 'config.toml').is_symlink():
+        raise ConfigError('Migration backup is missing its original settings.')
     for name in ('config.toml', 'pairs.toml'):
         saved = backup / name
         if saved.is_file():
@@ -110,3 +112,9 @@ def rollback(paths):
         else:
             (paths.config / name).unlink(missing_ok=True)
     marker.unlink()
+
+
+def rollback_command(paths):
+    with runner_lock(paths), (paths.config / 'pairs.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rollback(paths)

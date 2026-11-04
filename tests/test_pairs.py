@@ -87,16 +87,11 @@ class PairTests(unittest.TestCase):
         self.assertFalse(Path(args[args.index('--workdir') + 1]).exists())
         self.assertEqual(len(load_pairs(Paths.discover())), 1)
 
-    def test_missing_local_root_blocks_preview_before_rclone(self):
+    def test_uninitialized_sync_is_still_rejected(self):
         self.add()
-        self.local.rmdir()
         with patch('reicloud_sync.cli.rclone') as run:
-            self.assertEqual(self.invoke('init', 'notes', '--dry-run', '--prefer', 'local')[0], 1)
+            self.assertEqual(self.invoke('sync', 'notes')[0], 1)
         run.assert_not_called()
-
-    def test_init_requires_explicit_preference(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            main(['init', 'notes'])
 
     def test_real_rclone_preview_preserves_both_trees(self):
         if not shutil.which('rclone'):

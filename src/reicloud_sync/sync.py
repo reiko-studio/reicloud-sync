@@ -18,6 +18,7 @@ from .logging import get_cli_logger
 from .scheduling import read_schedule, runner_active
 from .exclusions import pending, fingerprint, filter_arguments, selection, managed_patterns
 from .activity import activity_scope
+from .initialization import plan_init, create_roots, preview_roots, remote_directory
 
 MARKER = '.reicloud-sync-access'
 
@@ -110,18 +111,7 @@ def status(paths, name):
 
 def verify_roots(paths, pair, run):
     make_pair(pair.name, pair.local, pair.remote, require_directory=True)
-    entries = json.loads(run(paths, 'listremotes', '--json', capture=True).stdout)
-    if not any(entry['name'] == 'dropbox' and entry['type'] == 'dropbox' for entry in entries):
-        raise ConfigError("Dropbox is not configured. Run 'reicloud login dropbox'.")
-    try:
-        result = run(paths, 'lsjson', pair.remote, '--stat', capture=True)
-    except subprocess.CalledProcessError as error:
-        if error.returncode in (3, 4):
-            raise ConfigError(f'Remote directory is missing: {pair.remote}. Create it in Dropbox before continuing.') from None
-        raise
-    info = json.loads(result.stdout)
-    if not isinstance(info, dict) or not info.get('IsDir'):
-        raise ConfigError(f'Remote root is not a directory: {pair.remote}')
+    remote_directory(paths, pair, run)
 
 
 def failure_policy(error, *, preflight=False):
@@ -195,8 +185,13 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                 raise ConfigError('Pair has no sync state. Use init first.')
             if operation == 'recover' and state['phase'] == 'ready':
                 raise ConfigError('Pair is ready; use sync. Recovery is reserved for interrupted or failed operations.')
+            init_plan = None
             try:
-                verify_roots(paths, pair, run)
+                if operation == 'init':
+                    init_plan = plan_init(paths, pair, run, prefer)
+                    logger.info('Initialization plan: %s', json.dumps(init_plan.describe(pair)))
+                else:
+                    verify_roots(paths, pair, run)
             except (ConfigError, OSError, ValueError, subprocess.CalledProcessError) as error:
                 if operation == 'sync' and not dry_run:
                     record_failure(directory, state, error, operation, preflight=True)
@@ -211,8 +206,8 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
             arguments = ['--verbose', '--create-empty-src-dirs',
                          '--conflict-resolve', 'none', '--conflict-loser', 'num', '--max-delete', str(max_delete)]
             if operation != 'sync':
-                arguments += ['--resync-mode', 'path1' if prefer == 'local' else 'path2']
-                logger.warning('%s %s: differing files prefer %s during initialization; unique files are combined.', operation, name, prefer)
+                arguments += ['--resync-mode', 'path2' if prefer == 'remote' else 'path1']
+                logger.warning('%s %s: %s; unique files are combined.', operation, name, f'differing files prefer {prefer}' if prefer else 'no conflicting files detected')
             if operation == 'sync' or not dry_run:
                 arguments += ['--check-access', '--check-filename', MARKER]
             if dry_run:
@@ -223,7 +218,8 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                         shutil.copytree(workdir, preview)
                     else:
                         preview.mkdir()
-                    run(paths, 'bisync', pair.local, pair.remote, *arguments,
+                    preview_local, preview_remote = preview_roots(pair, init_plan, temporary) if init_plan else (pair.local, pair.remote)
+                    run(paths, 'bisync', preview_local, preview_remote, *arguments,
                         '--workdir', str(preview), '--dry-run',
                         *filter_arguments(preview, pair, state, operation), lock_fd=lock_fd)
                 logger.info('Preview complete. Persistent sync history was not changed.')
@@ -232,6 +228,12 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                          started=now(), pair=asdict(pair), error=None, exit_code=None)
             write_state(directory, state)
             try:
+                if init_plan:
+                    create_roots(paths, pair, init_plan, run, lock_fd)
+                    # Recheck after provisioning so a concurrently populated destination
+                    # cannot silently turn a conflict-free plan into an overwrite.
+                    if not prefer:
+                        plan_init(paths, pair, run, None)
                 if operation != 'sync':
                     marker = Path(pair.local) / MARKER
                     if marker.is_symlink() or (marker.exists() and not marker.is_file()):
@@ -241,7 +243,7 @@ def transfer(paths, name, operation, prefer, dry_run, run, *, retry=False, max_d
                             stream.write('reicloud-sync access check\n')
                     except FileExistsError:
                         pass
-                    run(paths, 'copyto', str(marker), pair.remote.rstrip('/') + '/' + MARKER,
+                    run(paths, 'copyto', str(marker), pair.remote.rstrip('/') + ('' if pair.remote.endswith(':') else '/') + MARKER,
                         lock_fd=lock_fd)
                 workdir.mkdir(exist_ok=True, mode=0o700)
                 # Explicit recovery gets fresh history, retaining failed history for inspection.
