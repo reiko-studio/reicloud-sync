@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import unittest
+import json
 
 import test_setup
 from reicloud_sync.config import Paths, ConfigError
@@ -27,7 +28,7 @@ class RunnerTests(unittest.TestCase):
         self.paths.initialize()
         self.time = 0
         self.started = []
-        self.runner = Runner(self.paths, jobs=2, clock=lambda: self.time, worker=self.worker)
+        self.runner = Runner(self.paths, jobs=2, clock=lambda: self.time, worker=self.worker, wall_clock=lambda: 1700000000 + self.time)
 
     def worker(self, paths, pair):
         process = Process()
@@ -197,3 +198,61 @@ class RunnerTests(unittest.TestCase):
         self.runner.tick(once=True)
         self.assertFalse(self.runner.tick(once=True))
         self.assertTrue(self.runner.had_failures)
+
+    def test_status_shows_pause_and_only_live_next_run(self):
+        self.pair('notes', 60)
+        self.runner.tick()
+        self.started[-1][1].code = 0
+        with runner_lock(self.paths):
+            self.runner.tick()
+            row = json.loads(self.invoke('status', 'notes', '--json')[1])
+            self.assertTrue(row['runner_active'])
+            self.assertIsNotNone(row['next_run'])
+            self.assertEqual(row['interval_seconds'], 60)
+            self.assertEqual(self.invoke('pause', 'notes')[0], 0)
+            row = json.loads(self.invoke('status', 'notes', '--json')[1])
+            self.assertTrue(row['paused'])
+            self.assertIsNone(row['next_run'])
+        row = json.loads(self.invoke('status', 'notes', '--json')[1])
+        self.assertFalse(row['runner_active'])
+        self.assertIsNone(row['next_run'])
+
+    def test_restart_preserves_backoff_deadline_and_failure_count(self):
+        pair = self.pair('network')
+        self.runner.tick()
+        write_state(state_dir(self.paths, pair), {'phase': 'retryable_error',
+                    'last_success': None, 'automatic_retry': True, 'finished': 'failed'})
+        self.started[-1][1].code = 1
+        self.runner.tick()
+        restarted = Runner(self.paths, clock=lambda: self.time, worker=self.worker,
+                           wall_clock=lambda: 1700000000 + self.time)
+        self.time = 20
+        restarted.tick()
+        self.assertEqual(len(self.started), 1)
+        self.time = 30
+        restarted.tick()
+        self.assertEqual(len(self.started), 2)
+        self.started[-1][1].code = 1
+        restarted.tick()
+        row = json.loads(self.invoke('status', 'network', '--json')[1])
+        self.assertEqual(row['consecutive_failures'], 2)
+        self.assertIsNotNone(row['scheduled_for'])
+
+    def test_status_all_is_json_and_isolates_invalid_pair_state(self):
+        pair = self.pair('bad')
+        self.pair('good')
+        (state_dir(self.paths, pair) / 'status.json').write_text('invalid')
+        code, output = self.invoke('status', '--json')
+        self.assertEqual(code, 0)
+        rows = json.loads(output)
+        self.assertEqual([row['phase'] for row in rows], ['invalid', 'ready'])
+
+    def test_interval_change_updates_existing_schedule(self):
+        self.pair('notes', 60)
+        self.runner.tick()
+        self.started[-1][1].code = 0
+        self.runner.tick()
+        self.time = 10
+        self.assertEqual(self.invoke('interval', 'notes', '5s')[0], 0)
+        self.runner.tick()
+        self.assertEqual(len(self.started), 2)

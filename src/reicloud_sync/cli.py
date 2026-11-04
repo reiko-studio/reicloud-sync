@@ -127,7 +127,7 @@ def main(argv=None):
     recover.add_argument("--prefer", choices=["local", "remote"], required=True)
     recover.add_argument("--dry-run", action="store_true")
     state = commands.add_parser("status", help="Show persistent state and last successful run")
-    state.add_argument("name")
+    state.add_argument("name", nargs="?", help="Omit to show all pairs")
     state.add_argument("--json", action="store_true")
     run = commands.add_parser("run", help="Run periodic syncs in the foreground")
     run.add_argument("--once", action="store_true", help="Sync eligible pairs once and exit")
@@ -195,9 +195,31 @@ def main(argv=None):
                      retry=getattr(args, 'retry', False), max_delete=getattr(args, 'max_delete', 50))
             return 0
         if args.command == "status":
-            data = status(paths, args.name)
-            print(json.dumps(data, indent=2) if args.json else
-                  f"{data['name']}: {data['phase']}\nActive: {data['active']}\nLast success: {data.get('last_success') or 'never'}\nError: {data.get('error') or 'none'}")
+            names = [args.name] if args.name else [pair.name for pair in load_pairs(paths)]
+            rows = []
+            for name in names:
+                try:
+                    rows.append(status(paths, name))
+                except (ConfigError, OSError, ValueError) as error:
+                    if args.name:
+                        raise
+                    rows.append({'name': name, 'phase': 'invalid', 'error': str(error)})
+            if args.json:
+                print(json.dumps(rows[0] if args.name else rows, indent=2))
+            elif not rows:
+                print("No folder pairs configured.")
+            else:
+                for data in rows:
+                    print(f"{data['name']}: {data['phase']}"
+                          f"\nPaused: {data.get('paused', False)}"
+                          f"\nActive: {data.get('active', False)}"
+                          f"\nRunner: {'running' if data.get('runner_active') else 'stopped'}"
+                          f"\nInterval: {data.get('interval_seconds', 'unknown')} seconds"
+                          f"\nLast success: {data.get('last_success') or 'never'}"
+                          f"\nNext run: {data.get('next_run') or 'not scheduled'}"
+                          f"\nConsecutive failures: {data.get('consecutive_failures', 0)}"
+                          f"\nError: {data.get('error') or data.get('scheduler_error') or 'none'}"
+                          f"\nLast error: {data.get('last_error') or 'none'}")
             return 0
         if args.command == "setup":
             paths.initialize()

@@ -173,6 +173,25 @@ initialization, recovery and dry-run previews remain available. The runner notic
 resume on its next tick and makes the pair eligible immediately. Pause state is
 stored separately from transfer history, so a finishing transfer cannot erase it.
 
+## Status
+
+```sh
+reicloud status
+reicloud status notes --json
+```
+
+Status includes pause state, active transfer, runner ownership, interval, last
+successful run, current and last error, next run and consecutive failures. With
+no pair name it shows all pairs; JSON output is a list (a single named pair is an
+object). Timestamps are UTC with an explicit offset.
+
+Schedules and backoff counts are saved atomically and restored on runner restart.
+`next_run` is shown only while a runner owns the configuration and the pair is
+eligible; `scheduled_for` retains its saved deadline while the runner is stopped.
+Pausing hides the next run without erasing history. Historical last-error details
+remain visible after a later successful sync. Broken state for one pair is
+reported separately when listing all pairs.
+
 ## Configuration
 
 ```sh

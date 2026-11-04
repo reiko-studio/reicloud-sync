@@ -2,8 +2,8 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import fcntl
-import hashlib
 import os
 import signal
 import subprocess
@@ -14,7 +14,8 @@ import time
 from .config import ConfigError
 from .logging import get_cli_logger
 from .pairs import load_pairs
-from .sync import state_dir, status, read_control
+from .sync import state_dir, status, read_control, write_state
+from .scheduling import runner_lock_path, read_schedule
 
 
 def start_worker(paths, pair):
@@ -33,11 +34,15 @@ class Job:
 
 
 class Runner:
-    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker):
+    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker, wall_clock=time.time):
         self.paths = paths
         self.jobs = jobs
         self.clock = clock
         self.worker = worker
+        self.wall_clock = wall_clock
+        self.loaded = set()
+        self.schedules = {}
+        self.intervals = {}
         self.active = {}
         self.due = {}
         self.attempted = set()
@@ -47,6 +52,36 @@ class Runner:
         self.had_failures = False
         self.errors = {}
         self.logger = get_cli_logger()
+
+    def load_schedule(self, key, pair):
+        if key in self.loaded:
+            return
+        data = read_schedule(state_dir(self.paths, pair))
+        self.schedules[key] = data
+        self.failures[key] = data.get('failures', 0)
+        if data.get('next_run'):
+            remaining = datetime.fromisoformat(data['next_run']).timestamp() - self.wall_clock()
+            self.due[key] = self.clock() + max(0, remaining)
+        if data.get('blocked_signature') is not None:
+            self.blocked[key] = tuple(data['blocked_signature'])
+        self.loaded.add(key)
+
+    def save_schedule(self, key, pair):
+        due = self.due.get(key)
+        next_run = None if due is None or key in self.active or key in self.blocked else datetime.fromtimestamp(
+            self.wall_clock() + due - self.clock(), timezone.utc).isoformat()
+        previous = self.schedules.get(key, {})
+        if next_run and previous.get('next_run'):
+            if abs(datetime.fromisoformat(next_run).timestamp() - datetime.fromisoformat(previous['next_run']).timestamp()) < 0.5:
+                next_run = previous['next_run']
+        data = {'next_run': next_run, 'failures': self.failures.get(key, 0),
+                'blocked_signature': list(self.blocked[key]) if key in self.blocked else None,
+                'error': self.errors.get(key)}
+        if data != self.schedules.get(key):
+            directory = state_dir(self.paths, pair)
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            write_state(directory, data, filename='schedule.json')
+            self.schedules[key] = data
 
     @staticmethod
     def signature(state):
@@ -71,12 +106,21 @@ class Runner:
             self.due[key] = self.clock() + delay
             self.logger.warning('%s: transient failure; retry in %s seconds.', pair.name, delay)
         else:
+            self.failures[key] = self.failures.get(key, 0) + 1
             self.blocked[key] = self.signature(state)
             self.logger.error('%s needs manual attention; other pairs will continue.', pair.name)
 
     def tick(self, *, once=False):
         pairs = load_pairs(self.paths)
         known = {str(state_dir(self.paths, pair)): pair for pair in pairs}
+        for key, pair in known.items():
+            try:
+                self.load_schedule(key, pair)
+            except (ConfigError, OSError, ValueError) as error:
+                if self.errors.get(key) != str(error):
+                    self.logger.error('%s: %s', pair.name, error)
+                    self.errors[key] = str(error)
+        known = {key: pair for key, pair in known.items() if key in self.loaded}
         for key, job in list(self.active.items()):
             code = job.process.poll()
             if code is not None:
@@ -91,6 +135,11 @@ class Runner:
         pending = False
         for key, pair in sorted(known.items(), key=lambda entry: self.due.get(entry[0], 0)):
             try:
+                previous_interval = self.intervals.get(key)
+                self.intervals[key] = pair.interval
+                if (previous_interval is not None and previous_interval != pair.interval
+                        and key in self.due and not self.failures.get(key)):
+                    self.due[key] += pair.interval - previous_interval
                 control = read_control(state_dir(self.paths, pair))
                 previous = self.controls.get(key)
                 self.controls[key] = control
@@ -130,6 +179,12 @@ class Runner:
                 if self.errors.get(key) != str(error):
                     self.logger.error('%s: %s', pair.name, error)
                     self.errors[key] = str(error)
+        for key, pair in known.items():
+            try:
+                self.save_schedule(key, pair)
+            except OSError as error:
+                self.logger.error('%s: cannot save schedule: %s', pair.name, error)
+                self.had_failures = True
         return bool(self.active) or pending
 
     def stop(self):
@@ -154,8 +209,7 @@ class Runner:
 @contextmanager
 def runner_lock(paths):
     paths.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    key = hashlib.sha256(str(paths.config.resolve()).encode()).hexdigest()[:24]
-    with (paths.state / f'runner-{key}.lock').open('a') as lock:
+    with runner_lock_path(paths).open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

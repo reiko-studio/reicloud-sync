@@ -15,6 +15,7 @@ import tempfile
 from .config import ConfigError
 from .pairs import find_pair, make_pair
 from .logging import get_cli_logger
+from .scheduling import read_schedule, runner_active
 
 MARKER = '.reicloud-sync-access'
 
@@ -78,15 +79,29 @@ def status(paths, name):
     directory = state_dir(paths, pair)
     state = read_state(directory)
     active = False
-    if directory.exists():
-        with (directory / 'run.lock').open('a') as stream:
+    try:
+        with (directory / 'run.lock').open('r') as stream:
             try:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 active = True
+    except FileNotFoundError:
+        pass
     if state['phase'] == 'running' and not active:
         state = dict(state, phase='needs_recovery', error='Previous operation was interrupted.')
-    return dict(state, name=pair.name, active=active, state_dir=str(directory))
+    control = read_control(directory)
+    schedule = read_schedule(directory)
+    running = runner_active(paths)
+    next_run = schedule.get('next_run') if (running and not control['paused'] and not active
+               and (state['phase'] == 'ready' or (state['phase'] == 'retryable_error' and state.get('automatic_retry')))
+               and not schedule.get('blocked_signature')) else None
+    return dict(state, name=pair.name, active=active, state_dir=str(directory),
+                paused=control['paused'], interval_seconds=pair.interval,
+                runner_active=running, next_run=next_run,
+                scheduled_for=schedule.get('next_run'),
+                consecutive_failures=schedule.get('failures', 0),
+                last_error=state.get('last_error') or state.get('error') or schedule.get('error'),
+                scheduler_error=schedule.get('error'))
 
 
 def verify_roots(paths, pair, run):
@@ -141,7 +156,8 @@ def record_failure(directory, state, error, operation, *, preflight=False):
         message = f'Operation failed ({type(error).__name__}); inspect diagnostics before recovery.'
     state.update(phase='retryable_error' if retryable else 'needs_recovery',
                  operation=operation, finished=now(), exit_code=code, error=message,
-                 failure_kind=kind, automatic_retry=automatic and retryable)
+                 failure_kind=kind, automatic_retry=automatic and retryable,
+                 last_error=message, last_error_at=now())
     # Store classification and a safe message, never raw provider diagnostics.
     get_cli_logger().error('%s', message)
     write_state(directory, state)
