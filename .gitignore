@@ -1,0 +1,8 @@
+*local
+*.local.*
+.venv/
+.rpy-env
+__pycache__/
+*.egg-info/
+build/
+dist/

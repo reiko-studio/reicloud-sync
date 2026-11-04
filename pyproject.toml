@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reicloud-sync"
+version = "0.1.0"
+description = "A personal cloud sync manager powered by rclone."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+dependencies = ["sysentropy>=0.1.1,<0.2"]
+
+[project.scripts]
+reicloud = "reicloud_sync.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
