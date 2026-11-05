@@ -10,7 +10,7 @@ import shutil
 import socket
 
 from .config import ConfigError, atomic_text
-from .pairs import load_pairs, make_pair, serialize_pairs, validate_pairs
+from .pairs import load_pairs, make_pair, serialize_pairs, validate_pairs, workspace_name
 from .runner import runner_lock
 
 NAMESPACE = '.reicloud-computers'
@@ -64,8 +64,18 @@ def plan(paths, local, label=None, *, retire_legacy=False):
             'pairs': [asdict(pair) for pair in pairs]}, new_config, pairs
 
 
+def registry_pairs(pairs):
+    return [replace(pair, name=workspace_name(pair.remote.partition(':')[0]))
+            if pair.kind == 'workspace' else pair for pair in pairs]
+
+
 def migrate(paths, local, label=None, *, retire_legacy=False, dry_run=False, registry=False):
     result, config, pairs = plan(paths, local, label, retire_legacy=retire_legacy)
+    if registry:
+        config = registry_config(config['computer'], result['workspace'])
+        pairs = registry_pairs(pairs)
+        validate_pairs(pairs, config)
+        result.update(version=3, pairs=[asdict(pair) for pair in pairs])
     if dry_run:
         return result
     if result['requires_retirement']:
@@ -78,7 +88,9 @@ def migrate(paths, local, label=None, *, retire_legacy=False, dry_run=False, reg
             raise ConfigError('Pair configuration changed; preview migration again.')
         if registry:
             config = registry_config(config['computer'], result['workspace'])
+            pairs = registry_pairs(pairs)
             validate_pairs(pairs, config)
+            result.update(version=3, pairs=[asdict(pair) for pair in pairs])
         result['backup'] = publish(paths, config, pairs)
     return result
 
@@ -128,6 +140,7 @@ def upgrade(paths, *, dry_run=False):
         pairs = load_pairs(paths)
         workspace = next(pair for pair in pairs if pair.kind == 'workspace')
         config = registry_config(old['computer'], workspace.local)
+        pairs = registry_pairs(pairs)
         validate_pairs(pairs, config)
         return config, pairs
 

@@ -131,7 +131,7 @@ def validate_locations(paths, pairs, config):
 
 
 def workspace_name(remote):
-    return 'workspace' if remote == 'dropbox' else f'workspace-{remote}'
+    return f'workspace-{remote}'
 
 
 def load_v3_pairs(config, data):

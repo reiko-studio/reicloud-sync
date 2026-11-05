@@ -13,7 +13,7 @@ Install a release wheel with rpy. Reicloud needs Python 3.14 or newer and
 `rclone` on your PATH.
 
 ```sh
-rpy tool install ./reicloud_sync-0.1.1-py3-none-any.whl --python python3.14
+rpy tool install ./reicloud_sync-0.1.2-py3-none-any.whl --python python3.14
 ~/.local/bin/reicloud doctor
 ```
 
@@ -66,8 +66,8 @@ defaults without prompts. The equivalent explicit workflow is:
 
 ```sh
 reicloud setup --workspace ~/Dropbox --computer p16v --login
-reicloud init workspace --dry-run
-reicloud init workspace
+reicloud init workspace-dropbox --dry-run
+reicloud init workspace-dropbox
 reicloud run --watch
 ```
 
@@ -111,8 +111,8 @@ The canonical workspace cannot be removed independently of its profile.
 ## Initialization and manual sync
 
 ```sh
-reicloud sync workspace --dry-run
-reicloud sync workspace
+reicloud sync workspace-dropbox --dry-run
+reicloud sync workspace-dropbox
 reicloud status
 reicloud status results --json
 ```
@@ -133,8 +133,8 @@ not reset history or disable access checks. Retryable failures permit another
 sync; critical failures and interruptions require explicit recovery:
 
 ```sh
-reicloud recover workspace --dry-run --prefer local
-reicloud recover workspace --prefer local
+reicloud recover workspace-dropbox --dry-run --prefer local
+reicloud recover workspace-dropbox --prefer local
 ```
 
 Recovery rebuilds history and can resurrect deleted files or overwrite differing
@@ -145,11 +145,11 @@ then `sync NAME --retry`, using existing history rather than resync.
 ## Exclusions
 
 ```sh
-reicloud exclude workspace '.venv/**'
-reicloud exclude workspace '__pycache__/**'
-reicloud exclusions workspace
-reicloud exclusions workspace --apply --prefer local --dry-run
-reicloud exclusions workspace --apply --prefer local
+reicloud exclude workspace-dropbox '.venv/**'
+reicloud exclude workspace-dropbox '__pycache__/**'
+reicloud exclusions workspace-dropbox
+reicloud exclusions workspace-dropbox --apply --prefer local --dry-run
+reicloud exclusions workspace-dropbox --apply --prefer local
 ```
 
 Patterns use rclone glob syntax, not `.gitignore` syntax; quote them in the shell.
@@ -181,7 +181,7 @@ resolved by the browser. Listing a remote directory does not prove it has synced
 ## Runner and service
 
 ```sh
-reicloud interval workspace 10s
+reicloud interval workspace-dropbox 10s
 reicloud pause results
 reicloud resume results
 reicloud run --watch
@@ -224,7 +224,7 @@ On a v3 profile, enable Dropbox notifications for the registered connection:
 reicloud remote-watch on --remote dropbox
 reicloud service install --watch
 reicloud service start
-reicloud status workspace
+reicloud status workspace-dropbox
 ```
 
 The runner uses rclone's Dropbox change notifications to schedule earlier syncs.
@@ -237,8 +237,8 @@ to return to periodic remote scans.
 ## Logs and notifications
 
 ```sh
-reicloud logs workspace --lines 100 --follow
-reicloud logs workspace --json
+reicloud logs workspace-dropbox --lines 100 --follow
+reicloud logs workspace-dropbox --json
 reicloud notifications on
 reicloud notifications test
 ```
@@ -264,7 +264,8 @@ a secret. Reicloud never modifies the usual rclone config and ignores ambient
 `RCLONE_*` overrides. Status logs use sysentropy on stderr; command data uses stdout.
 
 Version 3 registers connections in `config.toml`. Each connection's workspace
-maps to its remote root. For example:
+maps to its remote root. Root jobs are named `workspace-<remote>`. For example,
+`[remotes.dropbox]` creates `workspace-dropbox`:
 
 ```toml
 [remotes.dropbox]
@@ -290,11 +291,12 @@ For an initialized v2 workspace, stop any active runner and preview the upgrade:
 ```sh
 reicloud migrate --dry-run
 reicloud migrate
-reicloud status workspace
-reicloud sync workspace --dry-run
+reicloud status workspace-dropbox
+reicloud sync workspace-dropbox --dry-run
 ```
 
-The migration backs up the previous settings and pairs. It preserves connection
+The migration backs up the previous settings and pairs. The Dropbox root job is
+called `workspace-dropbox` in v3. It preserves connection
 names, endpoints, credentials and sync history, so the workspace can continue
 from its existing baseline. For a fresh profile, `reicloud setup` shows Dropbox
 in the provider picker and writes v3.

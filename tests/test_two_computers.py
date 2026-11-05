@@ -117,7 +117,7 @@ class TwoComputerTests(unittest.TestCase):
         upgrade(paths, dry_run=True)
         self.assertEqual(paths.settings.read_bytes(), original)
         upgrade(paths)
-        after = status(paths, 'workspace')
+        after = status(paths, 'workspace-dropbox')
         for field in ('phase', 'last_success', 'state_dir', 'paused', 'filters_pending'):
             self.assertEqual(after[field], before[field])
-        transfer(paths, 'workspace', 'sync', None, True, self.run_local)
+        transfer(paths, 'workspace-dropbox', 'sync', None, True, self.run_local)

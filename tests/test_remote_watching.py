@@ -23,7 +23,7 @@ class RemoteWatcherTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
 
     def test_event_format_and_namespace_routing(self):
-        workspace = find_pair(self.paths, 'workspace')
+        workspace = find_pair(self.paths, 'workspace-dropbox')
         external = make_pair('notes', str(self.root / 'notes'),
                              'dropbox:.reicloud-computers/pc/notes', kind='external')
         self.assertEqual(event_path(r'"notes/a \"quote\".txt": 1'), 'notes/a "quote".txt')
@@ -39,7 +39,7 @@ class RemoteWatcherTests(unittest.TestCase):
 
     def test_supervised_listener_starts_routes_and_stops(self):
         self.paths.settings.write_text(self.paths.settings.read_text().replace('remote_watch = false', 'remote_watch = true'))
-        workspace = find_pair(self.paths, 'workspace')
+        workspace = find_pair(self.paths, 'workspace-dropbox')
         fake = self.root / 'fake-rclone'
         fake.write_text(f'#!{sys.executable}\n'
                         'import json, sys, time\n'

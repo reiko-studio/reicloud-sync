@@ -391,7 +391,7 @@ def main(argv=None):
             if fresh or (config['version'] == 1 and (args.workspace or not load_pairs(paths))):
                 migrate(paths, args.workspace or '~/Dropbox', args.computer, registry=True)
             elif config['version'] >= 2 and (args.workspace or args.computer):
-                workspace = find_pair(paths, workspace_name(select_remote(config)))
+                workspace = find_pair(paths, 'workspace' if config['version'] == 2 else workspace_name(select_remote(config)))
                 if ((args.workspace and str(Path(args.workspace).expanduser().resolve()) != workspace.local)
                         or (args.computer and computer_name(args.computer) != config['computer']['name'])):
                     raise ConfigError('Setup identity/root is already saved; it cannot be changed implicitly.')
@@ -407,7 +407,9 @@ def main(argv=None):
             if not args.login:
                 logger.info("Next: reicloud login")
                 if current['version'] >= 2:
-                    logger.info('After login: reicloud init workspace --dry-run')
+                    for pair in load_pairs(paths):
+                        if pair.kind == 'workspace':
+                            logger.info('After login: reicloud init %s --dry-run', pair.name)
                 return 0
         if args.command in ("setup", "login"):
             profile = paths.load()
@@ -424,7 +426,7 @@ def main(argv=None):
                         paths.credentials.chmod(0o600)
             check_remote(paths, name)
             if args.command == 'setup' and profile['version'] >= 2:
-                logger.info('Next: reicloud init %s --dry-run', workspace_name(name))
+                logger.info('Next: reicloud init %s --dry-run', 'workspace' if profile['version'] == 2 else workspace_name(name))
         elif args.command == "check":
             check_remote(paths, select_remote(paths.load(), args.provider))
         elif args.command == "config":
