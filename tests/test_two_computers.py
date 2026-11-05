@@ -105,3 +105,19 @@ class TwoComputerTests(unittest.TestCase):
             self.assertIn('different competing edit on second', contents)
         self.assertEqual((self.account / '.reicloud-computers/two-abcdef/results/private.txt').read_text(), 'computer two only')
         self.assertNotEqual(state_dir(first, find_pair(first, 'workspace')), state_dir(second, find_pair(second, 'workspace')))
+
+    def test_registry_upgrade_keeps_initialized_workspace_history(self):
+        from reicloud_sync.workspace import upgrade
+        from reicloud_sync.sync import status
+
+        paths, _ = self.clients[0]
+        self.run_pair(paths, 'workspace', 'init')
+        before = status(paths, 'workspace')
+        original = paths.settings.read_bytes()
+        upgrade(paths, dry_run=True)
+        self.assertEqual(paths.settings.read_bytes(), original)
+        upgrade(paths)
+        after = status(paths, 'workspace')
+        for field in ('phase', 'last_success', 'state_dir', 'paused', 'filters_pending'):
+            self.assertEqual(after[field], before[field])
+        transfer(paths, 'workspace', 'sync', None, True, self.run_local)

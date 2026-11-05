@@ -9,7 +9,7 @@ import shutil
 import tomllib
 
 from .config import ConfigError
-from .pairs import Pair
+from .pairs import Pair, load_pairs
 from .runner import runner_lock
 from .scheduling import runner_lock_path
 from .service import HEADER, unit_path, unit_name, systemctl
@@ -19,7 +19,10 @@ CONFIG_FILES = ('config.toml', 'pairs.toml', 'rclone.conf', 'notifications.json'
 
 
 def owned_states(paths):
-    known = set()
+    try:
+        known = {state_dir(paths, pair) for pair in load_pairs(paths)}
+    except (ConfigError, OSError):
+        known = set()
     saved = [paths.config / 'pairs.toml']
     backups = paths.config / 'backups'
     if backups.is_dir() and not backups.is_symlink():

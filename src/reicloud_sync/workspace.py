@@ -30,8 +30,8 @@ def computer_name(label=None):
     return f'{label}-{prefix}'
 
 
-def external_remote(config, name):
-    return f'dropbox:{NAMESPACE}/{config["computer"]["name"]}/{name}'
+def external_remote(config, name, remote="dropbox"):
+    return f'{remote}:{NAMESPACE}/{config["computer"]["name"]}/{name}'
 
 
 def plan(paths, local, label=None, *, retire_legacy=False):
@@ -64,7 +64,7 @@ def plan(paths, local, label=None, *, retire_legacy=False):
             'pairs': [asdict(pair) for pair in pairs]}, new_config, pairs
 
 
-def migrate(paths, local, label=None, *, retire_legacy=False, dry_run=False):
+def migrate(paths, local, label=None, *, retire_legacy=False, dry_run=False, registry=False):
     result, config, pairs = plan(paths, local, label, retire_legacy=retire_legacy)
     if dry_run:
         return result
@@ -76,22 +76,69 @@ def migrate(paths, local, label=None, *, retire_legacy=False, dry_run=False):
         result, config, pairs = plan(paths, local, label, retire_legacy=retire_legacy)
         if result['requires_retirement']:
             raise ConfigError('Pair configuration changed; preview migration again.')
-        backup = paths.config / 'backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
-        backup.mkdir(parents=True, mode=0o700)
-        for name in ('config.toml', 'pairs.toml'):
-            file = paths.config / name
-            if file.exists():
-                shutil.copy2(file, backup / name)
-        marker = paths.config / 'migration.json'
-        atomic_text(marker, json.dumps({'backup': str(backup)}))
-        try:
-            atomic_text(paths.config / 'pairs.toml', serialize_pairs(pairs))
-            atomic_text(paths.settings, f'version = 2\n\n[dropbox]\nremote = "dropbox"\n\n[computer]\nname = {json.dumps(config["computer"]["name"])}\n')
-        except BaseException:
-            rollback(paths)
-            raise
-        marker.unlink()
-        result['backup'] = str(backup)
+        if registry:
+            config = registry_config(config['computer'], result['workspace'])
+            validate_pairs(pairs, config)
+        result['backup'] = publish(paths, config, pairs)
+    return result
+
+
+def settings_text(config):
+    lines = [f'version = {config["version"]}', '', '[computer]',
+             f'name = {json.dumps(config["computer"]["name"])}']
+    if config['version'] == 2:
+        lines.extend(('', '[dropbox]', 'remote = "dropbox"'))
+    else:
+        for name, remote in config['remotes'].items():
+            lines.extend(('', f'[remotes.{json.dumps(name)}]',
+                          f'workspace = {json.dumps(remote["workspace"], ensure_ascii=False)}',
+                          f'remote_watch = {str(remote.get("remote_watch", False)).lower()}'))
+    return '\n'.join(lines) + '\n'
+
+
+def publish(paths, config, pairs):
+    backup = paths.config / 'backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+    backup.mkdir(parents=True, mode=0o700)
+    for name in ('config.toml', 'pairs.toml'):
+        file = paths.config / name
+        if file.exists():
+            shutil.copy2(file, backup / name)
+    marker = paths.config / 'migration.json'
+    atomic_text(marker, json.dumps({'backup': str(backup)}))
+    try:
+        atomic_text(paths.config / 'pairs.toml', serialize_pairs(pairs, config))
+        atomic_text(paths.settings, settings_text(config))
+    except BaseException:
+        rollback(paths)
+        raise
+    marker.unlink()
+    return str(backup)
+
+
+def registry_config(computer, local):
+    return {'version': 3, 'computer': computer,
+            'remotes': {'dropbox': {'workspace': local, 'remote_watch': False}}}
+
+
+def upgrade(paths, *, dry_run=False):
+    def prepare():
+        old = paths.load()
+        if old['version'] != 2:
+            raise ConfigError('Registry upgrade requires a v2 workspace.')
+        pairs = load_pairs(paths)
+        workspace = next(pair for pair in pairs if pair.kind == 'workspace')
+        config = registry_config(old['computer'], workspace.local)
+        validate_pairs(pairs, config)
+        return config, pairs
+
+    config, pairs = prepare()
+    result = {'version': 3, 'remotes': config['remotes'], 'pairs': [asdict(pair) for pair in pairs]}
+    if not dry_run:
+        with runner_lock(paths), (paths.config / 'pairs.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            config, pairs = prepare()
+            result.update(remotes=config['remotes'], pairs=[asdict(pair) for pair in pairs])
+            result['backup'] = publish(paths, config, pairs)
     return result
 
 

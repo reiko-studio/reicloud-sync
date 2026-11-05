@@ -49,7 +49,7 @@ class SetupUITests(unittest.TestCase):
         with patch('reicloud_sync.cli.terminal_available', return_value=True), patch('reicloud_sync.cli.setup_wizard', return_value=SetupAnswers(str(self.root / 'Dropbox'), 'laptop', False)) as ui:
             self.assertEqual(self.invoke('setup')[0], 0)
         ui.assert_called_once()
-        self.assertEqual(self.paths.load()['version'], 2)
+        self.assertEqual(self.paths.load()['version'], 3)
         self.assertFalse((self.root / 'Dropbox').exists())
 
     def test_flags_and_noninteractive_mode_never_prompt(self):

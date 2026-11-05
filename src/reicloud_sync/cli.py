@@ -25,8 +25,11 @@ from .exclusions import change as change_exclusion
 from .browse import listing as browse_listing
 from .cleanup import uninstall
 from .setup_ui import wizard as setup_wizard, terminal_available
-from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote
-from .pairs import edit_pairs, find_pair, load_pairs, make_pair
+from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote, upgrade
+from .pairs import edit_pairs, find_pair, load_pairs, make_pair, workspace_name
+
+
+from .remotes import select_remote, backend, require_dropbox
 
 
 def rclone(paths, *args, capture=False, lock_fd=None):
@@ -53,17 +56,10 @@ def rclone(paths, *args, capture=False, lock_fd=None):
 
 
 
-def remotes(paths):
-    return json.loads(rclone(paths, "listremotes", "--json", capture=True).stdout)
-
-
-def check_dropbox(paths):
-    entries = remotes(paths)
-    if not any(entry["name"] == "dropbox" and entry["type"] == "dropbox" for entry in entries):
-        raise ConfigError("Dropbox is not configured. Run 'reicloud login dropbox'.")
-    # Discard directory names: this verifies access without exposing account contents.
-    rclone(paths, "lsf", "dropbox:", "--max-depth", "1", capture=True)
-    get_cli_logger().info("Dropbox access verified. No files were transferred.")
+def check_remote(paths, name):
+    require_dropbox(paths, name, rclone)
+    rclone(paths, 'lsf', name + ':', '--max-depth', '1', capture=True)
+    get_cli_logger().info('Dropbox access verified for %s. No files were transferred.', name)
 
 
 def delete_percent(value):
@@ -113,13 +109,14 @@ def main(argv=None):
     config.add_argument("--json", action="store_true")
     commands.add_parser("doctor", help="Check configuration and rclone availability")
     login = commands.add_parser("login", help="Connect Dropbox through rclone's browser OAuth")
-    login.add_argument("provider", choices=["dropbox"])
+    login.add_argument("provider", nargs="?", metavar="REMOTE")
     check = commands.add_parser("check", help="Verify read-only remote access")
-    check.add_argument("provider", choices=["dropbox"])
+    check.add_argument("provider", nargs="?", metavar="REMOTE")
     add = commands.add_parser("add", help="Register a folder pair without transferring files")
     add.add_argument("name")
     add.add_argument("local")
     add.add_argument("remote", nargs="?", help="Legacy destination; workspace mappings derive their destination")
+    add.add_argument("--remote", dest="connection", help="Named remote for an external mapping")
     add.add_argument("--interval", type=duration, default=300, help="Sync interval (default: 5m)")
     listing = commands.add_parser("list", help="List saved folder pairs")
     listing.add_argument("--json", action="store_true")
@@ -190,6 +187,7 @@ def main(argv=None):
     migration.add_argument('--rollback', action='store_true')
     browse = commands.add_parser('browse', help='Inspect Dropbox without changing its contents')
     browse.add_argument('path', nargs='?', default='')
+    browse.add_argument('--remote')
     browse.add_argument('--computer')
     browse.add_argument('--computers', action='store_true')
     browse.add_argument('--json', action='store_true')
@@ -211,7 +209,7 @@ def main(argv=None):
             print(json.dumps(uninstall(paths, wipe=args.wipe, yes=args.yes, dry_run=args.dry_run), indent=2))
             return 0
         if args.command == 'browse':
-            result = browse_listing(paths, args.path, rclone, computer=args.computer, computers=args.computers)
+            result = browse_listing(paths, args.path, rclone, computer=args.computer, computers=args.computers, connection=args.remote)
             if args.json:
                 print(json.dumps(result, indent=2))
             else:
@@ -224,8 +222,12 @@ def main(argv=None):
             if args.rollback:
                 rollback_migration(paths)
                 logger.info('Interrupted migration rolled back.')
+            elif paths.load()['version'] == 2:
+                if args.workspace or args.computer or args.retire_legacy_pairs:
+                    raise ConfigError('Registry upgrade preserves existing endpoints. Omit migration overrides.')
+                print(json.dumps(upgrade(paths, dry_run=args.dry_run), indent=2))
             else:
-                result = migrate(paths, args.workspace or '~/Dropbox', args.computer,
+                result = migrate(paths, args.workspace or '~/Dropbox', args.computer, registry=True,
                                  retire_legacy=args.retire_legacy_pairs, dry_run=args.dry_run)
                 print(json.dumps(result, indent=2))
             return 0
@@ -285,10 +287,11 @@ def main(argv=None):
             return 0
         if args.command == "add":
             config = paths.load()
-            if config['version'] == 2:
+            if config['version'] >= 2:
                 if args.name == 'workspace':
                     raise ConfigError('workspace is reserved for the canonical Dropbox folder.')
-                remote = external_remote(config, args.name)
+                connection = select_remote(config, args.connection)
+                remote = external_remote(config, args.name, connection)
                 if args.remote is not None and args.remote != remote:
                     raise ConfigError(f'External mappings must target {remote}; shared content belongs inside the workspace.')
                 pair = make_pair(args.name, args.local, remote, interval=args.interval, kind='external')
@@ -367,40 +370,44 @@ def main(argv=None):
             paths.initialize()
             config = paths.load()
             if fresh or (config['version'] == 1 and (args.workspace or not load_pairs(paths))):
-                migrate(paths, args.workspace or '~/Dropbox', args.computer)
-            elif config['version'] == 2 and (args.workspace or args.computer):
-                workspace = find_pair(paths, 'workspace')
+                migrate(paths, args.workspace or '~/Dropbox', args.computer, registry=True)
+            elif config['version'] >= 2 and (args.workspace or args.computer):
+                workspace = find_pair(paths, workspace_name(select_remote(config)))
                 if ((args.workspace and str(Path(args.workspace).expanduser().resolve()) != workspace.local)
                         or (args.computer and computer_name(args.computer) != config['computer']['name'])):
                     raise ConfigError('Setup identity/root is already saved; it cannot be changed implicitly.')
             logger.info("Configuration ready: %s", paths.settings)
             current = paths.load()
-            if current['version'] == 2:
-                logger.info('Computer: %s; workspace: %s', current['computer']['name'], find_pair(paths, 'workspace').local)
+            if current['version'] >= 2:
+                logger.info('Computer: %s', current['computer']['name'])
+                for pair in load_pairs(paths):
+                    if pair.kind == 'workspace':
+                        logger.info('Workspace %s: %s', pair.name, pair.local)
             else:
                 logger.info('Legacy pairs retained. Preview reicloud migrate --dry-run before switching workflows.')
             if not args.login:
-                logger.info("Next: reicloud login dropbox")
-                if current['version'] == 2:
+                logger.info("Next: reicloud login")
+                if current['version'] >= 2:
                     logger.info('After login: reicloud init workspace --dry-run')
                 return 0
         if args.command in ("setup", "login"):
-            paths.load()
-            if any(entry["name"] == "dropbox" for entry in remotes(paths)):
-                logger.info("Dropbox remote already exists; checking access.")
-            else:
+            profile = paths.load()
+            name = select_remote(profile, getattr(args, 'provider', None))
+            kind = backend(paths, name, rclone)
+            if kind is None:
+                if name != 'dropbox':
+                    raise ConfigError('Setup can create only the dropbox connection. Configure this named Dropbox connection in rclone first.')
                 logger.info("Opening Dropbox login through rclone. Complete authorization in your browser.")
                 try:
-                    rclone(paths, "config", "create", "dropbox", "dropbox", "--no-output")
+                    rclone(paths, "config", "create", name, "dropbox", "--no-output")
                 finally:
                     if paths.credentials.exists():
                         paths.credentials.chmod(0o600)
-            check_dropbox(paths)
-            if args.command == 'setup' and paths.load()['version'] == 2:
-                logger.info('Next: reicloud init workspace --dry-run')
+            check_remote(paths, name)
+            if args.command == 'setup' and profile['version'] >= 2:
+                logger.info('Next: reicloud init %s --dry-run', workspace_name(name))
         elif args.command == "check":
-            paths.load()
-            check_dropbox(paths)
+            check_remote(paths, select_remote(paths.load(), args.provider))
         elif args.command == "config":
             load_pairs(paths)
             if args.json:

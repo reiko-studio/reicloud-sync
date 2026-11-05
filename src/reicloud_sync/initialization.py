@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 from .config import ConfigError
+from .remotes import require_dropbox
 from .exclusions import filter_text, selection
 
 
@@ -23,9 +24,7 @@ class InitPlan:
 
 
 def remote_directory(paths, pair, run, *, missing_ok=False):
-    entries = json.loads(run(paths, 'listremotes', '--json', capture=True).stdout)
-    if not any(entry['name'] == 'dropbox' and entry['type'] == 'dropbox' for entry in entries):
-        raise ConfigError("Dropbox is not configured. Run 'reicloud login dropbox'.")
+    require_dropbox(paths, pair.remote.partition(':')[0], run)
     try:
         info = json.loads(run(paths, 'lsjson', pair.remote, '--stat', capture=True).stdout)
     except subprocess.CalledProcessError as error:
