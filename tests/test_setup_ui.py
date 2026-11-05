@@ -26,12 +26,12 @@ class SetupUITests(unittest.TestCase):
     def prompts(self, answers):
         with ExitStack() as stack:
             asked = stack.enter_context(patch('reicloud_sync.setup_ui.ask', side_effect=answers))
-            for name in ('path', 'text', 'confirm'):
+            for name in ('select', 'path', 'text', 'confirm'):
                 stack.enter_context(patch('questionary.' + name, return_value=Mock()))
             yield asked
 
     def test_blank_wizard_previews_identity_without_writes(self):
-        with self.prompts([str(self.root / 'Dropbox'), 'laptop', False, True]), patch('questionary.print'):
+        with self.prompts(['Dropbox', str(self.root / 'Dropbox'), 'laptop', False, True]), patch('questionary.print'):
             result = wizard(self.paths)
         self.assertEqual(result.computer, 'laptop')
         self.assertFalse(result.login)
@@ -39,7 +39,7 @@ class SetupUITests(unittest.TestCase):
         self.assertFalse((self.root / 'Dropbox').exists())
 
     def test_declining_summary_cancels_without_setup_files(self):
-        with self.prompts([str(self.root / 'Dropbox'), 'laptop', False, False]), patch('questionary.print'):
+        with self.prompts(['Dropbox', str(self.root / 'Dropbox'), 'laptop', False, False]), patch('questionary.print'):
             with self.assertRaises(KeyboardInterrupt):
                 wizard(self.paths)
         self.assertFalse(self.paths.config.exists())
@@ -89,7 +89,7 @@ class SetupUITests(unittest.TestCase):
         self.assertIsNot(workspace_error(self.paths, str(file)), True)
 
     def test_actual_prompt_flow_with_terminal_keystrokes(self):
-        factories = {name: getattr(questionary, name) for name in ('path', 'text', 'confirm')}
+        factories = {name: getattr(questionary, name) for name in ('select', 'path', 'text', 'confirm')}
         target = str(self.root / 'Dropbox')
         with create_pipe_input() as pipe, ExitStack() as stack:
             for name, factory in factories.items():
@@ -100,7 +100,7 @@ class SetupUITests(unittest.TestCase):
             timeout = threading.Timer(5, lambda: pipe.send_text('\x03'))
             timeout.start()
             try:
-                pipe.send_text('\x15' + target + '\r\x15ui-test\rny')
+                pipe.send_text('\r\x15' + target + '\r\x15ui-test\rny')
                 result = wizard(self.paths)
             finally:
                 timeout.cancel()

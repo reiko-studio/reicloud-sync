@@ -70,6 +70,8 @@ def wizard(paths, *, workspace=None, computer=None, login=False):
     elif legacy:
         questionary.print('Existing legacy pairs will be preserved. Use migrate --dry-run to plan a workspace migration.')
     else:
+        questionary.print('Dropbox is available now. More cloud providers are planned.')
+        ask(questionary.select('Cloud provider:', choices=['Dropbox']))
         if workspace is None:
             workspace = ask(questionary.path('Local Dropbox folder:', default='~/Dropbox',
                                             only_directories=True,
