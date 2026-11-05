@@ -9,7 +9,7 @@ description = "A personal cloud sync manager powered by rclone."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
-dependencies = ["sysentropy>=0.1.1,<0.2", "watchfiles>=1.1,<2"]
+dependencies = ["sysentropy>=0.1.1,<0.2", "watchfiles>=1.1,<2", "questionary>=2,<3"]
 
 [project.scripts]
 reicloud = "reicloud_sync.cli:main"

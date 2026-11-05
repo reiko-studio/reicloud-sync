@@ -18,6 +18,18 @@ rpy pip install -e .
 
 ## Shared workspace
 
+For a guided first setup, run `reicloud setup` in a terminal. A small wizard asks
+for the workspace folder, computer label and whether to connect Dropbox, then
+shows the resolved setup before saving. Ctrl+C cancels before any setup
+writes. The wizard never initializes synchronization or installs a service.
+Existing workspace identities are displayed and preserved; legacy pairs require
+an explicit migration rather than being silently converted.
+
+Use `setup --interactive` to force the wizard, or `--non-interactive` to suppress
+it. Providing setup flags keeps the command noninteractive unless
+`--interactive` is also specified. Redirected/non-terminal input uses flags and
+defaults without prompts. The equivalent explicit workflow is:
+
 ```sh
 reicloud setup --workspace ~/Dropbox --computer p16v --login
 reicloud init workspace --dry-run

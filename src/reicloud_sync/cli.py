@@ -24,6 +24,7 @@ from .sync import state_dir
 from .exclusions import change as change_exclusion
 from .browse import listing as browse_listing
 from .cleanup import uninstall
+from .setup_ui import wizard as setup_wizard, terminal_available
 from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair
 
@@ -103,6 +104,9 @@ def main(argv=None):
     setup = commands.add_parser("setup", help="Create directories and initial configuration")
     setup.add_argument("--workspace", help="Canonical local Dropbox folder (default for new setup: ~/Dropbox)")
     setup.add_argument("--computer", help="Computer label; a machine-ID suffix is appended")
+    mode = setup.add_mutually_exclusive_group()
+    mode.add_argument('--interactive', action='store_true', help='Open the setup wizard')
+    mode.add_argument('--non-interactive', action='store_true', help='Use flags/defaults without prompts')
     setup.add_argument("--login", action="store_true", help="Also start Dropbox login")
     config = commands.add_parser("config", help="Inspect configuration without displaying credentials")
     config.add_argument("action", choices=["paths", "check"])
@@ -352,6 +356,13 @@ def main(argv=None):
                           f"\nLast error: {data.get('last_error') or 'none'}")
             return 0
         if args.command == "setup":
+            bare_setup = not (args.workspace or args.computer or args.login)
+            use_wizard = args.interactive or (not args.non_interactive and bare_setup and terminal_available())
+            if use_wizard:
+                if not terminal_available():
+                    raise ConfigError('Interactive setup requires a terminal. Use --non-interactive with flags instead.')
+                answers = setup_wizard(paths, workspace=args.workspace, computer=args.computer, login=args.login)
+                args.workspace, args.computer, args.login = answers.workspace, answers.computer, answers.login
             fresh = not paths.settings.exists()
             paths.initialize()
             config = paths.load()
@@ -370,6 +381,8 @@ def main(argv=None):
                 logger.info('Legacy pairs retained. Preview reicloud migrate --dry-run before switching workflows.')
             if not args.login:
                 logger.info("Next: reicloud login dropbox")
+                if current['version'] == 2:
+                    logger.info('After login: reicloud init workspace --dry-run')
                 return 0
         if args.command in ("setup", "login"):
             paths.load()
@@ -383,6 +396,8 @@ def main(argv=None):
                     if paths.credentials.exists():
                         paths.credentials.chmod(0o600)
             check_dropbox(paths)
+            if args.command == 'setup' and paths.load()['version'] == 2:
+                logger.info('Next: reicloud init workspace --dry-run')
         elif args.command == "check":
             paths.load()
             check_dropbox(paths)
