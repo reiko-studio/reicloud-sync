@@ -98,7 +98,10 @@ def status(paths, name):
     next_run = schedule.get('next_run') if (running and not control['paused'] and not active and not pending(pair, state)
                and (state['phase'] == 'ready' or (state['phase'] == 'retryable_error' and state.get('automatic_retry')))
                and not schedule.get('blocked_signature')) else None
-    return dict(state, name=pair.name, active=active, state_dir=str(directory),
+    remote_watch = paths.load().get('remotes', {}).get(pair.remote.partition(':')[0], {}).get('remote_watch', False)
+    return dict(state, remote_watch=remote_watch,
+                remote_watcher=schedule.get('remote_watcher', 'idle') if running and remote_watch else 'off' if not remote_watch else 'stopped',
+                name=pair.name, local=pair.local, remote=pair.remote, active=active, state_dir=str(directory),
                 paused=control['paused'], interval_seconds=pair.interval,
                 kind=pair.kind, managed_exclusions=list(managed_patterns(pair)),
                 exclusions=list(pair.exclusions), filters_pending=pending(pair, state),

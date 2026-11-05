@@ -5,6 +5,7 @@ from pathlib import Path
 
 import argparse
 import json
+import fcntl
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ import subprocess
 import sys
 
 from . import __version__
-from .config import ConfigError, Paths
+from .config import ConfigError, Paths, atomic_text
 from .sync import transfer, status, set_paused
 from .runner import run_forever
 from .processes import run_locked
@@ -25,7 +26,7 @@ from .exclusions import change as change_exclusion
 from .browse import listing as browse_listing
 from .cleanup import uninstall
 from .setup_ui import wizard as setup_wizard, terminal_available
-from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote, upgrade
+from .workspace import migrate, rollback_command as rollback_migration, computer_name, external_remote, upgrade, settings_text
 from .pairs import edit_pairs, find_pair, load_pairs, make_pair, workspace_name
 
 
@@ -195,6 +196,9 @@ def main(argv=None):
     cleanup.add_argument('--wipe', action='store_true')
     cleanup.add_argument('--yes', action='store_true')
     cleanup.add_argument('--dry-run', action='store_true')
+    remote_watch = commands.add_parser('remote-watch', help='Enable or disable Dropbox change notifications')
+    remote_watch.add_argument('action', choices=['on', 'off'])
+    remote_watch.add_argument('--remote', help='Registered rclone connection name')
     args = parser.parse_args(argv)
     logger = get_cli_logger()
     paths = Paths.discover(args.config_dir)
@@ -204,6 +208,20 @@ def main(argv=None):
                     "rclone_config": str(paths.credentials), "state_dir": str(paths.state),
                     "cache_dir": str(paths.cache)}
             print(json.dumps(data, indent=2) if args.json else "\n".join(f"{key}: {value}" for key, value in data.items()))
+            return 0
+        if args.command == 'remote-watch':
+            paths.load()
+            with (paths.config / 'pairs.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                profile = paths.load()
+                if profile['version'] != 3:
+                    raise ConfigError('Remote watching requires a v3 profile. Run reicloud migrate --dry-run.')
+                name = select_remote(profile, args.remote)
+                if args.action == 'on':
+                    require_dropbox(paths, name, rclone)
+                profile['remotes'][name]['remote_watch'] = args.action == 'on'
+                atomic_text(paths.settings, settings_text(profile))
+            logger.info('Remote watching %s for %s.', args.action, name)
             return 0
         if args.command == 'uninstall':
             print(json.dumps(uninstall(paths, wipe=args.wipe, yes=args.yes, dry_run=args.dry_run), indent=2))
@@ -296,8 +314,8 @@ def main(argv=None):
                     raise ConfigError(f'External mappings must target {remote}; shared content belongs inside the workspace.')
                 pair = make_pair(args.name, args.local, remote, interval=args.interval, kind='external')
             else:
-                if args.remote is None:
-                    raise ConfigError('Legacy setup requires a remote; migrate to use automatic destinations.')
+                if args.connection is not None or args.remote is None:
+                    raise ConfigError('Legacy setup requires a positional remote endpoint. Migrate to use --remote NAME.')
                 pair = make_pair(args.name, args.local, args.remote, interval=args.interval, require_directory=True)
             for directory in (paths.config, paths.state, paths.cache):
                 if directory.resolve().is_relative_to(pair.local) or Path(pair.local).is_relative_to(directory.resolve()):
@@ -350,6 +368,7 @@ def main(argv=None):
                           f"\nPaused: {data.get('paused', False)}"
                           f"\nExclusion changes pending: {data.get('filters_pending', False)}"
                           f"\nActive: {data.get('active', False)}"
+                          f"\nRemote watcher: {data.get('remote_watcher', 'off')}"
                           f"\nRunner: {'running' if data.get('runner_active') else 'stopped'}"
                           f"\nInterval: {data.get('interval_seconds', 'unknown')} seconds"
                           f"\nLast success: {data.get('last_success') or 'never'}"

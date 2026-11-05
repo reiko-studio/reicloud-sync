@@ -35,7 +35,7 @@ class Job:
 
 
 class Runner:
-    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker, wall_clock=time.time, watcher=None):
+    def __init__(self, paths, jobs=2, *, clock=time.monotonic, worker=start_worker, wall_clock=time.time, watcher=None, remote_watcher=None):
         self.paths = paths
         self.jobs = jobs
         self.clock = clock
@@ -55,6 +55,9 @@ class Runner:
         self.logger = get_cli_logger()
         self.watcher = watcher
         self.dirty = {}
+        self.remote_watcher = remote_watcher
+        self.remote_dirty = {}
+        self.remote_cooldown = {}
 
     def load_schedule(self, key, pair):
         if key in self.loaded:
@@ -73,10 +76,15 @@ class Runner:
         due = self.due.get(key, 0)
         if key in self.dirty and not self.failures.get(key):
             due = min(due, self.dirty[key])
+        if key in self.remote_dirty and not self.failures.get(key):
+            due = min(due, self.remote_due(key))
         return due
 
+    def remote_due(self, key):
+        return max(self.remote_dirty[key], self.remote_cooldown.get(key, 0))
+
     def save_schedule(self, key, pair):
-        due = self.effective_due(key) if key in self.due or key in self.dirty else None
+        due = self.effective_due(key) if key in self.due or key in self.dirty or key in self.remote_dirty else None
         next_run = None if due is None or key in self.active or key in self.blocked else datetime.fromtimestamp(
             self.wall_clock() + due - self.clock(), timezone.utc).isoformat()
         previous = self.schedules.get(key, {})
@@ -86,6 +94,8 @@ class Runner:
         data = {'next_run': next_run, 'failures': self.failures.get(key, 0),
                 'blocked_signature': list(self.blocked[key]) if key in self.blocked else None,
                 'error': self.errors.get(key)}
+        if self.remote_watcher:
+            data['remote_watcher'] = self.remote_watcher.health(pair)
         if data != self.schedules.get(key):
             directory = state_dir(self.paths, pair)
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -103,6 +113,7 @@ class Runner:
             self.failures.pop(key, None)
             self.blocked.pop(key, None)
             self.due[key] = self.clock() + pair.interval
+            self.remote_cooldown[key] = self.clock() + 15
             return
         self.had_failures = True
         state = status(self.paths, pair.name)
@@ -126,6 +137,9 @@ class Runner:
         if self.watcher:
             for key in self.watcher.drain():
                 self.dirty[key] = self.clock() + 2
+        if self.remote_watcher:
+            for key in self.remote_watcher.drain():
+                self.remote_dirty[key] = self.clock() + 2
         watched = []
         known = {str(state_dir(self.paths, pair)): pair for pair in pairs}
         for key, pair in known.items():
@@ -193,9 +207,16 @@ class Runner:
                 pending = True
                 if len(self.active) >= self.jobs:
                     continue
-                self.logger.info('Starting scheduled sync: %s', pair.name)
+                remote_trigger = (not once and not self.failures.get(key) and key in self.remote_dirty
+                                  and self.remote_due(key) <= self.clock()
+                                  and self.due.get(key, 0) > self.clock())
+                if remote_trigger:
+                    self.logger.info('Starting sync after Dropbox change: %s', pair.name)
+                else:
+                    self.logger.info('Starting scheduled sync: %s', pair.name)
                 self.attempted.add(key)
                 self.dirty.pop(key, None)
+                self.remote_dirty.pop(key, None)
                 try:
                     self.active[key] = Job(pair, self.worker(self.paths, pair))
                 except OSError:
@@ -209,6 +230,11 @@ class Runner:
                     self.errors[key] = str(error)
         if self.watcher:
             self.watcher.refresh(watched)
+        if self.remote_watcher:
+            self.remote_watcher.refresh(watched)
+            eligible = {str(state_dir(self.paths, pair)) for pair in watched}
+            self.remote_dirty = {key: due for key, due in self.remote_dirty.items() if key in eligible}
+            self.remote_cooldown = {key: due for key, due in self.remote_cooldown.items() if key in known}
         for key, pair in known.items():
             try:
                 self.save_schedule(key, pair)
@@ -218,6 +244,8 @@ class Runner:
         return bool(self.active) or pending
 
     def stop(self):
+        if self.remote_watcher:
+            self.remote_watcher.close()
         if self.watcher:
             self.watcher.close()
         for job in self.active.values():
@@ -259,7 +287,9 @@ def run_forever(paths, jobs=2, *, once=False, watching=False):
     if watching:
         from .watching import WatchManager
         watcher = WatchManager(paths)
-    runner = Runner(paths, jobs, watcher=watcher)
+    from .remote_watching import RemoteWatchManager
+    remote_watcher = None if once else RemoteWatchManager(paths)
+    runner = Runner(paths, jobs, watcher=watcher, remote_watcher=remote_watcher)
     with runner_lock(paths):
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
