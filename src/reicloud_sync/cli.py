@@ -16,7 +16,7 @@ from .config import ConfigError, Paths
 from .sync import transfer, status, set_paused
 from .runner import run_forever
 from .processes import run_locked
-from .service import install as install_service, control as control_service
+from .service import install as install_service, control as control_service, installed_python
 from .logging import get_cli_logger
 from .notifications import enabled as notifications_enabled, configure as configure_notifications, send as send_notification
 from .activity import read_entries, follow, current_recorder, sanitize
@@ -408,7 +408,17 @@ def main(argv=None):
             else:
                 logger.info("Configuration is valid.")
         elif args.command == "doctor":
-            paths.load()
+            if paths.settings.exists() or (paths.config / 'migration.json').exists():
+                load_pairs(paths)
+            print(f"Reicloud: {__version__}\nPython: {sys.executable}")
+            service_python = installed_python(paths)
+            if service_python:
+                suffix = ' (missing)' if not service_python.is_file() else ''
+                print(f"Service Python: {service_python}{suffix}")
+                if service_python != Path(sys.executable).absolute():
+                    print('Reinstall the service from this installation to switch interpreters.')
+            else:
+                print('Service Python: no managed unit found')
             version = rclone(paths, "version", capture=True).stdout.splitlines()[0]
             print(f"Configuration: {paths.settings}\nEngine: {version}")
             print("Credentials: present" if paths.credentials.is_file() else "Credentials: absent (run reicloud login dropbox)")

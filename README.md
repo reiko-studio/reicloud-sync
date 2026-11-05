@@ -7,6 +7,40 @@ mappings for folders that live elsewhere. Reicloud handles configuration,
 initialization, periodic sync, local watching, logs and desktop alerts; rclone
 handles OAuth and file transfers. Google Drive support is planned.
 
+## Install the release
+
+Install a release wheel with rpy. Reicloud needs Python 3.14 or newer and
+`rclone` on your PATH.
+
+```sh
+rpy tool install ./reicloud_sync-0.1.0-py3-none-any.whl --python python3.14
+~/.local/bin/reicloud doctor
+```
+
+Run these commands outside any activated development environment or use the
+explicit `~/.local/bin/reicloud` path throughout. rpy exposes the command there
+and keeps its dependencies in a dedicated tool environment.
+
+After setup and initialization, install and start the user service:
+
+```sh
+~/.local/bin/reicloud service install --watch
+~/.local/bin/reicloud service start
+~/.local/bin/reicloud service status
+~/.local/bin/reicloud doctor
+```
+
+Doctor shows both the CLI interpreter and the interpreter configured in the
+unit. They should point to the same tool environment. The service starts
+in future user sessions. To start it at boot and keep it running after logout,
+explicitly enable lingering with `loginctl enable-linger "$USER"`.
+
+To upgrade or roll back, stop the service, run `rpy tool uninstall reicloud-sync`,
+then install the desired wheel and rerun `service install --watch` and
+`service start` from the installed command. Keep the previous wheel for rollback.
+The rpy uninstall removes the package environment. Reicloud's own
+`uninstall --wipe` also deletes local setup and history, so reserve it for a reset.
+
 ## Install for development
 
 Requires Python 3.14+, rpy and rclone on PATH.
@@ -256,3 +290,15 @@ two independent computers, shared edits/deletions/conflicts and private mappings
 Desktop delivery and service controls are mocked. Systemd syntax and filesystem
 watch events are checked with their real tools. Automated tests do not access
 Dropbox. A real two-PC test remains the deployment gate.
+
+## Build release artifacts
+
+From the repository root, with a clean output directory:
+
+```sh
+uv build --out-dir dist
+(cd dist && sha256sum ./*.whl ./*.tar.gz > SHA256SUMS)
+```
+
+Install the resulting wheel into a clean environment, run the CLI outside the
+checkout, and verify the generated service unit before distributing it.
