@@ -66,6 +66,8 @@ class Paths:
             raise ConfigError(f"Invalid config.toml: {error}") from None
         if type(data.get("version")) is not int or data["version"] not in (1, 2, 3):
             raise ConfigError("config.toml must contain version = 1, 2 or 3.")
+        if data['version'] < 3 and 'remotes' in data:
+            raise ConfigError('Named remotes require config version 3.')
         section = data.get("dropbox")
         if data["version"] < 3 and (not isinstance(section, dict) or section.get("remote") != "dropbox"):
             raise ConfigError('config.toml must contain [dropbox] with remote = "dropbox".')

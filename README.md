@@ -13,7 +13,7 @@ Install a release wheel with rpy. Reicloud needs Python 3.14 or newer and
 `rclone` on your PATH.
 
 ```sh
-rpy tool install ./reicloud_sync-0.1.0-py3-none-any.whl --python python3.14
+rpy tool install ./reicloud_sync-0.1.1-py3-none-any.whl --python python3.14
 ~/.local/bin/reicloud doctor
 ```
 
@@ -189,8 +189,8 @@ reicloud run --watch
 
 Intervals accept seconds, minutes or hours, from `1s` to seven days. They are
 measured after completion; existing pairs default to five minutes. `run` uses
-intervals only; `--watch` adds debounced local-change triggers while keeping
-periodic scans for remote changes. Excluded-path events may trigger a scan, but
+scheduled scans by default. `--watch` adds debounced local-change triggers.
+Remote watching is configured separately for each Dropbox connection. Excluded-path events may trigger a scan, but
 transfer exclusions still apply. Changes during a transfer coalesce into a
 follow-up scan. Pause, pending filters, safety failures and retry backoff remain
 in force. Pause allows active transfers to finish and persists across restarts.
@@ -215,6 +215,24 @@ or restarting it. Reinstall and stop/start after changing unit options or moving
 the Python environment. Stop does not disable future startup. No root privileges
 are needed; installation does not change user lingering policy. Logs also appear
 in the user journal. `service path` prints the generated unit path.
+
+## Remote watching
+
+On a v3 profile, enable Dropbox notifications for the registered connection:
+
+```sh
+reicloud remote-watch on --remote dropbox
+reicloud service install --watch
+reicloud service start
+reicloud status workspace
+```
+
+The runner uses rclone's Dropbox change notifications to schedule earlier syncs.
+It coalesces events, excludes computer-specific mappings from workspace triggers,
+and applies a short cooldown after each successful sync. Periodic scans continue
+through reconnects. Pause, deletion limits and retry backoff still apply.
+The watcher was verified with rclone 1.75.2. Use `remote-watch off --remote dropbox`
+to return to periodic remote scans.
 
 ## Logs and notifications
 
@@ -244,6 +262,42 @@ same override on subsequent commands. Settings live in `config.toml`, pairs in
 `pairs.toml`, and dedicated OAuth credentials in `rclone.conf`. Treat that file as
 a secret. Reicloud never modifies the usual rclone config and ignores ambient
 `RCLONE_*` overrides. Status logs use sysentropy on stderr; command data uses stdout.
+
+Version 3 registers connections in `config.toml`. Each connection's workspace
+maps to its remote root. For example:
+
+```toml
+[remotes.dropbox]
+workspace = "~/Dropbox"
+remote_watch = false
+```
+
+External pairs in `pairs.toml` use a named target:
+
+```toml
+[pairs.results]
+local = "~/documents/results"
+targets = ["dropbox"]
+```
+
+`reicloud add results ~/documents/results --remote dropbox` writes this mapping
+and derives its computer namespace. Reicloud discovers the backend from rclone.
+This release runs Dropbox jobs with one target each. The v3 layout reserves
+room for other backends and multiple targets.
+
+For an initialized v2 workspace, stop any active runner and preview the upgrade:
+
+```sh
+reicloud migrate --dry-run
+reicloud migrate
+reicloud status workspace
+reicloud sync workspace --dry-run
+```
+
+The migration backs up the previous settings and pairs. It preserves connection
+names, endpoints, credentials and sync history, so the workspace can continue
+from its existing baseline. For a fresh profile, `reicloud setup` shows Dropbox
+in the provider picker and writes v3.
 
 Version-1 configurations remain usable. Stop their runner and inspect migration:
 
